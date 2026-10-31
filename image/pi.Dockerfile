@@ -28,6 +28,7 @@ RUN apt-get update \
         fd-find \
         git \
         ripgrep \
+        wl-clipboard \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd
 

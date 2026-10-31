@@ -98,12 +98,17 @@ It runs rootless Podman with:
 - memory and PID limits
 - no Podman/Docker socket
 - no host home, host SSH keys or host namespaces
+- mirrors the project at its host absolute path and starts Pi there, so the
+  footer shows the real project path instead of `/workspace`
+- exposes only the host Wayland socket so Pi can read clipboard images
 
 Mounts:
 
 | Container path | Source | Mode |
 |---|---|---|
 | `/workspace` | project directory | read-write |
+| project host path | same project directory | read-write |
+| `/tmp/wayland-0` | host Wayland socket | read-only |
 | `/state/pi-agent` | named volume `pi-state-<hash>` | read-write |
 | `/home/alessio` | named volume `pi-home-<hash>` | read-write |
 | `/sessions` | `$PI_SANDBOX_STATE/sessions/<project>-<hash>` | read-write |
@@ -119,6 +124,43 @@ Mounts:
 
 The entrypoint copies the read-only global files into the per-project state
 volume. Credentials are not copied; they are symlinked from `/shared-auth`.
+
+## Working directory and footer
+
+Pi builds its footer from the process working directory. The launcher used to
+start Pi in `/workspace`, so every session showed `workspace` in the footer.
+
+When the project lives under the host home directory, the launcher also mounts
+it at the same absolute path inside the container and starts Pi there. The
+footer then shows the actual project, for example `~/code/foo`, which makes
+concurrent sessions distinguishable.
+
+Sessions created before this change still record `/workspace` as their working
+directory. Start a new session to get the mirrored path in the footer.
+
+## Clipboard images
+
+Pi intercepts `ctrl+v` itself; the screenshot tool only puts the cropped image
+on the Wayland clipboard. On paste, Pi runs `wl-paste`, reads the image bytes,
+writes them to its own temporary file inside the container
+(`/tmp/pi-clipboard-<uuid>.<ext>`), and inserts that path into the editor.
+
+That is why the file is in `/tmp` and has a `pi-clipboard-` prefix: Pi created
+it. It is not the screenshot tool's file, and nothing under `~/Pictures` is
+involved when the tool copies to the clipboard.
+
+To support this, the launcher:
+
+- installs `wl-clipboard` in the image;
+- bind-mounts only the host Wayland socket at `/tmp/wayland-0`;
+- sets `WAYLAND_DISPLAY=/tmp/wayland-0` and `XDG_RUNTIME_DIR=/tmp`.
+
+The container can read your clipboard while that socket is connected. The rest
+of `$XDG_RUNTIME_DIR` is not mounted. Rebuild the image once after this change:
+
+```bash
+pi-sandbox --update
+```
 
 ## Global config
 

@@ -81,6 +81,19 @@ state_volume="pi-state-${project_id}"
 home_volume="pi-home-${project_id}"
 session_dir="$STATE_DIR/sessions/${project_name}-${project_id}"
 
+# Pi's footer shows the process working directory. Mirror the project at its
+# host path and start Pi there, so the footer identifies the actual project
+# (for example ~/code/foo) instead of the generic /workspace.
+container_workspace="/workspace"
+mirror_mounts=()
+
+# Only mirror paths under the host home directory. Mounting an arbitrary
+# absolute path over the container root filesystem could hide system files.
+if [[ "$workspace" == "$HOME"/* && "$workspace" != "/workspace" ]]; then
+  container_workspace="$workspace"
+  mirror_mounts+=(--mount "type=bind,src=$workspace,dst=$workspace")
+fi
+
 mkdir -p "$session_dir" "$STATE_DIR/auth" "$STATE_DIR/secrets"
 chmod 700 "$STATE_DIR/auth" "$STATE_DIR/secrets" "$session_dir"
 
@@ -115,6 +128,25 @@ envs=(
   --env "GIT_TERMINAL_PROMPT=0"
 )
 networks=(--network pi-egress)
+
+# Pi intercepts Ctrl+V, reads an image from the Wayland clipboard with
+# wl-paste, and writes its own /tmp/pi-clipboard-<uuid>.<ext> inside the
+# container. Expose only the compositor socket, not the whole runtime dir.
+if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+  wayland_socket="$WAYLAND_DISPLAY"
+  if [[ "$wayland_socket" != /* ]]; then
+    if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+      wayland_socket="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+    else
+      wayland_socket=""
+    fi
+  fi
+
+  if [[ -n "$wayland_socket" && -S "$wayland_socket" ]]; then
+    mounts+=(--mount "type=bind,src=$wayland_socket,dst=/tmp/wayland-0,ro")
+    envs+=(--env "WAYLAND_DISPLAY=/tmp/wayland-0" --env "XDG_RUNTIME_DIR=/tmp")
+  fi
+fi
 
 # Use the host git identity inside the container so commits and annotated tags
 # work without mounting the host ~/.gitconfig.
@@ -174,13 +206,14 @@ exec podman run --rm -it \
   --security-opt=no-new-privileges \
   --pids-limit=512 \
   --memory=4g \
-  --workdir /workspace \
+  --workdir "$container_workspace" \
+  --mount "type=volume,src=$home_volume,dst=/home/$USER" \
   --mount "type=bind,src=$workspace,dst=/workspace" \
   --mount "type=volume,src=$state_volume,dst=/state/pi-agent" \
-  --mount "type=volume,src=$home_volume,dst=/home/$USER" \
   --mount "type=bind,src=$session_dir,dst=/sessions" \
   --tmpfs /tmp:rw,nosuid,nodev \
   "${mounts[@]}" \
+  "${mirror_mounts[@]}" \
   "${envs[@]}" \
   "${networks[@]}" \
   "$PI_IMAGE" pi "$@"
