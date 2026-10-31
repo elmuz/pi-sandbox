@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+#
+# Launch an interactive Pi coding-agent container with:
+#   - only the project workspace bind-mounted read-write
+#   - read-only global Pi config
+#   - per-project state and session storage
+#   - shared provider/MCP credentials
+#   - no Podman/Docker socket, no host home, no host namespaces
+#
+# Usage:
+#   cd /path/to/project
+#   pi-sandbox [pi arguments...]
+#   pi-sandbox --workspace /path/to/project [pi arguments...]
+#
+# The MCP control network is attached only when the project has
+# .pi/mcp.json. The MCP bearer token is read from
+# $PI_SANDBOX_STATE/secrets/mcp_token when that file exists.
+#
+# Source assets live in this repository. Writable runtime state lives in
+# ${XDG_DATA_HOME:-$HOME/.local/share}/pi-sandbox by default.
+
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+REPO_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+IMAGE_DIR="$REPO_DIR/image"
+STATE_DIR="${PI_SANDBOX_STATE:-${XDG_DATA_HOME:-$HOME/.local/share}/pi-sandbox}"
+
+host_pi_version="$(pi --version 2>/dev/null | head -n 1 | tr -d '[:space:]' || true)"
+PI_VERSION="${PI_VERSION:-${host_pi_version:-1.4.0}}"
+PI_IMAGE="${PI_IMAGE:-localhost/pi-sandbox:${PI_VERSION}}"
+
+PI_BASE_IMAGE="${PI_BASE_IMAGE:-node:24-trixie-slim}"
+
+workspace="${PI_WORKSPACE:-$PWD}"
+update_image=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workspace)
+      workspace="${2:?--workspace needs a path}"
+      shift 2
+      ;;
+    --update)
+      update_image=1
+      shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [[ ! -d "$workspace" ]]; then
+  echo "Workspace is not a directory: $workspace" >&2
+  exit 2
+fi
+
+workspace="$(realpath "$workspace")"
+
+if [[ "$workspace" == "$HOME" ]]; then
+  echo "Refusing to mount the whole home directory read-write: $workspace" >&2
+  echo "cd into a project, or run: pi-sandbox --workspace /path/to/project" >&2
+  exit 2
+fi
+
+case "$workspace" in
+  /|"$HOME/.ssh"|"$HOME/.pi"|"$STATE_DIR")
+    echo "Refusing to mount sensitive path read-write: $workspace" >&2
+    exit 2
+    ;;
+esac
+
+project_name="$(basename "$workspace" | sed 's/[^A-Za-z0-9_.-]/-/g')"
+project_id="$(printf '%s' "$workspace" | sha256sum | cut -c1-10)"
+state_volume="pi-state-${project_id}"
+home_volume="pi-home-${project_id}"
+session_dir="$STATE_DIR/sessions/${project_name}-${project_id}"
+
+mkdir -p "$session_dir" "$STATE_DIR/auth" "$STATE_DIR/secrets"
+chmod 700 "$STATE_DIR/auth" "$STATE_DIR/secrets" "$session_dir"
+
+# Create the fixed networks used by both the Pi wrapper and Compose.
+podman network exists pi-egress >/dev/null 2>&1 \
+  || podman network create pi-egress >/dev/null
+podman network exists pi-control >/dev/null 2>&1 \
+  || podman network create --internal pi-control >/dev/null
+
+if [[ "$update_image" -eq 1 ]]; then
+  echo "Rebuilding Pi image $PI_IMAGE from $PI_BASE_IMAGE with PI_VERSION=$PI_VERSION ..."
+  podman build --pull --no-cache \
+    --build-arg "BASE_IMAGE=${PI_BASE_IMAGE}" \
+    --build-arg "PI_VERSION=$PI_VERSION" \
+    -t "$PI_IMAGE" \
+    -f "$IMAGE_DIR/pi.Dockerfile" \
+    "$IMAGE_DIR"
+elif ! podman image exists "$PI_IMAGE"; then
+  echo "Building Pi image $PI_IMAGE from $PI_BASE_IMAGE ..."
+  podman build \
+    --build-arg "BASE_IMAGE=${PI_BASE_IMAGE}" \
+    -t "$PI_IMAGE" \
+    -f "$IMAGE_DIR/pi.Dockerfile" \
+    "$IMAGE_DIR"
+fi
+
+mounts=()
+envs=(
+  --env "HOME=/home/$USER"
+  --env "PI_CODING_AGENT_DIR=/state/pi-agent"
+  --env "PI_CODING_AGENT_SESSION_DIR=/sessions"
+)
+networks=(--network pi-egress)
+
+# Global, non-secret Pi configuration. Never mount auth.json, trust.json,
+# sessions, mcp-auth.json or the whole ~/.pi/agent directory.
+for file in settings.json models.json AGENTS.md; do
+  if [[ -f "$HOME/.pi/agent/$file" ]]; then
+    mounts+=(--mount "type=bind,src=$HOME/.pi/agent/$file,dst=/global-pi/$file,ro")
+  fi
+done
+
+for dir in prompts skills themes extensions; do
+  if [[ -d "$HOME/.pi/agent/$dir" ]]; then
+    mounts+=(--mount "type=bind,src=$HOME/.pi/agent/$dir,dst=/global-pi/$dir,ro")
+  fi
+done
+
+# Credentials are shared across Pi instances, but deliberately kept outside
+# the project state and workspace. Create this directory once, then copy
+# auth.json into it if you want a single /login for all containers.
+mounts+=(--mount "type=bind,src=$STATE_DIR/auth,dst=/shared-auth")
+
+# Only projects that declare an MCP server get the control network and token.
+if [[ -f "$workspace/.pi/mcp.json" ]]; then
+  networks+=(--network pi-control)
+
+  if [[ -f "$STATE_DIR/secrets/mcp_token" ]]; then
+    mounts+=(--mount "type=bind,src=$STATE_DIR/secrets/mcp_token,dst=/secrets/mcp_token,ro")
+    envs+=(--env "MCP_TOKEN=$(<"$STATE_DIR/secrets/mcp_token")")
+  fi
+fi
+
+exec podman run --rm -it \
+  --name "pi-${project_name}-$$" \
+  --label "pi-sandbox.project=$project_name" \
+  --userns=keep-id \
+  --user "$(id -u):$(id -g)" \
+  --init \
+  --read-only \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  --pids-limit=512 \
+  --memory=4g \
+  --workdir /workspace \
+  --mount "type=bind,src=$workspace,dst=/workspace" \
+  --mount "type=volume,src=$state_volume,dst=/state/pi-agent" \
+  --mount "type=volume,src=$home_volume,dst=/home/$USER" \
+  --mount "type=bind,src=$session_dir,dst=/sessions" \
+  --tmpfs /tmp:rw,nosuid,nodev \
+  "${mounts[@]}" \
+  "${envs[@]}" \
+  "${networks[@]}" \
+  "$PI_IMAGE" pi "$@"

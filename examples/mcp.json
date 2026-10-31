@@ -1,0 +1,19 @@
+# Example project-level MCP configuration.
+#
+# Only projects that contain .pi/mcp.json get the pi-control network and the
+# MCP_TOKEN environment variable.
+#
+# The token is read by the wrapper from:
+#   $PI_SANDBOX_STATE/secrets/mcp_token
+
+{
+  "mcpServers": {
+    "catafalco": {
+      "url": "http://mcp-catafalco:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_TOKEN}"
+      },
+      "description": "Manage Docker services and inspect host health on catafalco"
+    }
+  }
+}

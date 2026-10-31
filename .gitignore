@@ -1,0 +1,11 @@
+# Runtime secrets and state must never be committed.
+/auth/
+/secrets/
+/sessions/
+/mcp/
+.env
+*.env
+!examples/**/*.example
+*.key
+*.pem
+*.jsonl

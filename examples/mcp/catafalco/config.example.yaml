@@ -1,0 +1,57 @@
+# remote-server-mcp configuration for the catafalco target.
+#
+# This file is mounted read-only into the MCP container. Edit it on the host,
+# then restart the service.
+#
+# The SSH key is mounted at /run/secrets/ssh_key. known_hosts is mounted at
+# /etc/server-mcp/known_hosts. The bearer token and other secrets belong in
+# .env next to this file, not in this YAML file.
+
+executor: ssh
+container_runtime: docker
+
+ssh:
+  host: "catafalco.example.com"
+  port: 22
+  username: "mcp"
+  key_path: "/run/secrets/ssh_key"
+  known_hosts: "/etc/server-mcp/known_hosts"
+  connect_timeout: 10
+
+security:
+  services_path: "/srv"
+  allowed_containers: []
+  host_units: ["telegraf", "smartmontools", "docker", "smbd"]
+  allow_generic_commands: false
+
+health:
+  disk_paths:
+    - "/"
+
+# Optional metric sources. Keep disabled until configured.
+influxdb:
+  enabled: false
+
+prometheus:
+  enabled: false
+
+# The container listens on the internal Docker/Podman network. A non-loopback
+# bind requires MCP_HTTP_TOKEN from .env.
+transport:
+  type: streamable-http
+  host: "0.0.0.0"
+  port: 8000
+  path: "/mcp"
+  token: null
+
+rate_limit:
+  enabled: true
+  max_calls: 10
+  window_seconds: 60
+
+output:
+  max_bytes: 64000
+
+audit:
+  enabled: true
+  path: "/var/lib/server-mcp/audit.jsonl"

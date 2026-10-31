@@ -1,0 +1,6 @@
+# Keep the Pi image build context minimal.
+# Only the Dockerfile and entrypoint are needed.
+
+*
+!pi.Dockerfile
+!entrypoint.sh

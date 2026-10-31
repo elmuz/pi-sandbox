@@ -1,0 +1,221 @@
+# pi-sandbox
+
+Containerized Pi coding-agent harness.
+
+The repository contains **source assets**. Runtime state, credentials, session
+history and target-specific MCP configuration live outside the repository in
+`${XDG_DATA_HOME:-$HOME/.local/share}/pi-sandbox`.
+
+## Layout
+
+```text
+pi-sandbox/
+├── bin/pi-sandbox                 interactive launcher
+├── image/
+│   ├── pi.Dockerfile              Pi image definition
+│   ├── entrypoint.sh              copies global config, links shared auth
+│   └── .dockerignore
+├── compose/compose.yaml           long-running MCP services
+├── examples/mcp.json              project-level Pi MCP client example
+├── examples/mcp/catafalco/        target config templates
+├── install.sh                     creates state dirs and symlinks the launcher
+└── README.md
+```
+
+Runtime state:
+
+```text
+~/.local/share/pi-sandbox/
+├── auth/                          shared Pi credentials
+├── secrets/                       MCP bearer token
+├── sessions/                      shared per-project sessions
+└── mcp/catafalco/                 target config, key, known_hosts, audit
+```
+
+`PI_SANDBOX_STATE` overrides the runtime state directory.
+
+## Install
+
+```bash
+./install.sh
+```
+
+This:
+
+- creates the state directories with private modes;
+- symlinks `~/.local/bin/pi-sandbox` to this repository;
+- installs example MCP target files only when they do not already exist.
+
+It does not create or copy credentials.
+
+## Build and run
+
+The image is tagged with the host Pi version:
+
+```text
+localhost/pi-sandbox:1.4.0
+```
+
+The launcher reads `pi --version` and builds that tag if it is missing.
+Trixie is the only supported base image.
+
+```bash
+cd ~/code/some-project
+pi-sandbox
+```
+
+or:
+
+```bash
+pi-sandbox --workspace ~/code/some-project
+```
+
+Launching from `$HOME` is refused because it would mount the entire home
+directory. Run from a project directory instead.
+
+Update the image after an Arch package update:
+
+```bash
+pi-sandbox --update
+```
+
+Build a specific version:
+
+```bash
+PI_VERSION=1.4.0 pi-sandbox --update
+```
+
+## What the launcher does
+
+It runs rootless Podman with:
+
+- `--rm`
+- non-root UID/GID
+- `userns=keep-id`
+- read-only root filesystem
+- `cap-drop=ALL`
+- `no-new-privileges`
+- memory and PID limits
+- no Podman/Docker socket
+- no host home, host SSH keys or host namespaces
+
+Mounts:
+
+| Container path | Source | Mode |
+|---|---|---|
+| `/workspace` | project directory | read-write |
+| `/state/pi-agent` | named volume `pi-state-<hash>` | read-write |
+| `/home/alessio` | named volume `pi-home-<hash>` | read-write |
+| `/sessions` | `$PI_SANDBOX_STATE/sessions/<project>-<hash>` | read-write |
+| `/shared-auth` | `$PI_SANDBOX_STATE/auth` | read-write |
+| `/global-pi/settings.json` | host Pi config | read-only |
+| `/global-pi/models.json` | host Pi config | read-only |
+| `/global-pi/AGENTS.md` | host Pi config | read-only |
+| `/global-pi/prompts/` | host Pi config | read-only |
+| `/global-pi/skills/` | host Pi config | read-only |
+| `/global-pi/themes/` | host Pi config | read-only |
+| `/global-pi/extensions/` | host Pi config | read-only |
+| `/secrets/mcp_token` | optional MCP token | read-only |
+
+The entrypoint copies the read-only global files into the per-project state
+volume. Credentials are not copied; they are symlinked from `/shared-auth`.
+
+## Global config
+
+Shared read-only from `~/.pi/agent`:
+
+```text
+settings.json
+models.json
+AGENTS.md
+prompts/
+skills/
+themes/
+extensions/
+```
+
+Not shared:
+
+```text
+auth.json
+trust.json
+sessions/
+mcp-auth.json
+models-store.json
+bin/
+keybindings.json
+SYSTEM.md
+APPEND_SYSTEM.md
+```
+
+`fd` is installed in the image, so Pi does not need to download it per project.
+
+## Credentials
+
+The shared auth directory is:
+
+```text
+$PI_SANDBOX_STATE/auth/
+```
+
+To reuse the host login:
+
+```bash
+install -m 0600 ~/.pi/agent/auth.json \
+  "$HOME/.local/share/pi-sandbox/auth/auth.json"
+```
+
+Do not run `/login` in two containers at the same time.
+
+## Sessions
+
+Sessions are stored per project:
+
+```text
+$PI_SANDBOX_STATE/sessions/<project>-<hash>/
+```
+
+They survive container removal and can be resumed with `/resume` or:
+
+```bash
+pi-sandbox --continue
+```
+
+Do not open the same session concurrently from two Pi instances.
+
+## Project MCP config
+
+Only projects with `.pi/mcp.json` join the internal `pi-control` network.
+See `examples/mcp.json`.
+
+The launcher passes `MCP_TOKEN` only when both the project MCP file and
+`$PI_SANDBOX_STATE/secrets/mcp_token` exist.
+
+## MCP services
+
+The Compose scaffold is in `compose/compose.yaml`. Set the state directory:
+
+```bash
+export PI_SANDBOX_STATE="$HOME/.local/share/pi-sandbox"
+export MCP_IMAGE=remote-server-mcp:local
+podman compose -f compose/compose.yaml up -d
+```
+
+The MCP image itself belongs to the `server-mcp` repository and is not built
+here.
+
+## Not tracked
+
+Never commit:
+
+```text
+auth/auth.json
+auth/mcp-auth.json
+secrets/mcp_token
+mcp/*/.env
+mcp/*/ssh/*
+mcp/*/audit/
+sessions/
+```
+
+The repository `.gitignore` excludes these paths.

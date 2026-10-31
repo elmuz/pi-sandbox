@@ -1,0 +1,69 @@
+# Long-running MCP services.
+#
+# Pi itself is launched interactively by ~/.local/bin/pi-sandbox, not by this
+# Compose file. This file currently defines one MCP target: catafalco.
+#
+# The MCP image is not built by this scaffold. Set MCP_IMAGE to a locally built
+# image once server-mcp has a container image, or add a build: block here.
+#
+# Runtime state is outside this repository. Set PI_SANDBOX_STATE to the
+# operator state directory, for example:
+#   export PI_SANDBOX_STATE="$HOME/.local/share/pi-sandbox"
+
+name: pi-sandbox
+
+x-mcp-common: &mcp-common
+  image: ${MCP_IMAGE:-remote-server-mcp:local}
+  userns_mode: keep-id
+  user: "1000:1000"
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:rw,nosuid,nodev
+  restart: unless-stopped
+  networks:
+    - pi-control
+    - pi-egress
+  healthcheck:
+    test:
+      - CMD
+      - python
+      - -c
+      - "import socket; s=socket.create_connection(('127.0.0.1', 8000), 2); s.close()"
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 20s
+
+services:
+  mcp-catafalco:
+    <<: *mcp-common
+    container_name: mcp-catafalco
+    environment:
+      REMOTE_SERVER_MCP_CONFIG: /etc/server-mcp/config.yaml
+    volumes:
+      - ${PI_SANDBOX_STATE:?set PI_SANDBOX_STATE}/mcp/catafalco/config.yaml:/etc/server-mcp/config.yaml:ro
+      - ${PI_SANDBOX_STATE:?set PI_SANDBOX_STATE}/mcp/catafalco/.env:/etc/server-mcp/.env:ro
+      - ${PI_SANDBOX_STATE:?set PI_SANDBOX_STATE}/mcp/catafalco/ssh/id_ed25519:/run/secrets/ssh_key:ro
+      - ${PI_SANDBOX_STATE:?set PI_SANDBOX_STATE}/mcp/catafalco/known_hosts:/etc/server-mcp/known_hosts:ro
+      - ${PI_SANDBOX_STATE:?set PI_SANDBOX_STATE}/mcp/catafalco/audit:/var/lib/server-mcp:rw
+    command:
+      - remote-server-mcp
+      - --config
+      - /etc/server-mcp/config.yaml
+      - --transport
+      - streamable-http
+      - --http-host
+      - 0.0.0.0
+      - --http-port
+      - "8000"
+
+networks:
+  pi-control:
+    name: pi-control
+    internal: true
+  pi-egress:
+    name: pi-egress
