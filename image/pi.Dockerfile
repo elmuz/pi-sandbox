@@ -13,7 +13,7 @@
 ARG BASE_IMAGE=node:24-trixie-slim
 FROM ${BASE_IMAGE}
 
-ARG USERNAME=alessio
+ARG SANDBOX_USER=alessio
 ARG UID=1000
 ARG GID=1000
 ARG PI_VERSION=1.4.0
@@ -43,8 +43,8 @@ RUN npm install -g --ignore-scripts \
 
 # The node image already uses UID/GID 1000. Rename that account rather than
 # creating a conflicting one.
-RUN groupmod -n "${USERNAME}" node \
-    && usermod -l "${USERNAME}" -d "/home/${USERNAME}" -m node
+RUN groupmod -n "${SANDBOX_USER}" node \
+    && usermod -l "${SANDBOX_USER}" -d "/home/${SANDBOX_USER}" -m node
 
 # Mount points for read-only global config, writable state, shared sessions,
 # shared auth, and MCP secrets.
@@ -58,8 +58,8 @@ RUN install -d -o root -g root -m 0755 \
 COPY entrypoint.sh /usr/local/bin/pi-entrypoint
 RUN chmod 0755 /usr/local/bin/pi-entrypoint
 
-USER ${USERNAME}
-ENV HOME=/home/${USERNAME}
+USER ${SANDBOX_USER}
+ENV HOME=/home/${SANDBOX_USER}
 WORKDIR /workspace
 
 ENTRYPOINT ["/usr/local/bin/pi-entrypoint"]

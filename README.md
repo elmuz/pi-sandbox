@@ -10,6 +10,7 @@ history and target-specific MCP configuration live outside the repository in
 
 ```text
 pi-sandbox/
+├── .github/workflows/ci.yml       lint and image build
 ├── bin/pi-sandbox                 interactive launcher
 ├── image/
 │   ├── pi.Dockerfile              Pi image definition
@@ -33,6 +34,20 @@ Runtime state:
 ```
 
 `PI_SANDBOX_STATE` overrides the runtime state directory.
+
+## CI
+
+`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests:
+
+- ShellCheck on the launcher, installer and entrypoint;
+- Hadolint on `image/pi.Dockerfile`;
+- yamllint on the Compose file, examples and workflow;
+- markdownlint on Markdown files;
+- actionlint on the workflow itself;
+- a Docker build of `image/pi.Dockerfile`, followed by a `pi --version`
+  smoke test.
+
+Lint rules live in `.hadolint.yaml` and `.yamllint.yml`.
 
 ## Install
 
@@ -105,7 +120,7 @@ It runs rootless Podman with:
 Mounts:
 
 | Container path | Source | Mode |
-|---|---|---|
+| --- | --- | --- |
 | `/workspace` | project directory | read-write |
 | project host path | same project directory | read-write |
 | `/tmp/wayland-0` | host Wayland socket | read-only |

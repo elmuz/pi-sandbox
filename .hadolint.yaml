@@ -1,0 +1,8 @@
+---
+# Debian package versions are deliberately not pinned: the base image tag
+# selects the distribution and apt supplies current security updates at build
+# time. DL4006 covers `echo <checksum> | sha256sum -c -`, whose left-hand side
+# cannot fail, so a pipefail shell would not change the build's behaviour.
+ignored:
+  - DL3008
+  - DL4006
