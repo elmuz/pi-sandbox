@@ -112,8 +112,20 @@ envs=(
   --env "HOME=/home/$USER"
   --env "PI_CODING_AGENT_DIR=/state/pi-agent"
   --env "PI_CODING_AGENT_SESSION_DIR=/sessions"
+  --env "GIT_TERMINAL_PROMPT=0"
 )
 networks=(--network pi-egress)
+
+# Use the host git identity inside the container so commits and annotated tags
+# work without mounting the host ~/.gitconfig.
+git_name="$(git config --global user.name 2>/dev/null || true)"
+git_email="$(git config --global user.email 2>/dev/null || true)"
+if [[ -n "$git_name" ]]; then
+  envs+=(--env "GIT_AUTHOR_NAME=$git_name" --env "GIT_COMMITTER_NAME=$git_name")
+fi
+if [[ -n "$git_email" ]]; then
+  envs+=(--env "GIT_AUTHOR_EMAIL=$git_email" --env "GIT_COMMITTER_EMAIL=$git_email")
+fi
 
 # Global, non-secret Pi configuration. Never mount auth.json, trust.json,
 # sessions, mcp-auth.json or the whole ~/.pi/agent directory.

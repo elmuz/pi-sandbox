@@ -166,7 +166,9 @@ When that file exists, the launcher:
 
 - mounts it read-only at `/secrets/gh_token`;
 - sets `GH_TOKEN`;
-- lets the entrypoint configure `gh auth setup-git`.
+- lets the entrypoint configure `gh auth setup-git`;
+- rewrites GitHub SSH remotes to HTTPS so existing checkouts work without a
+  mounted SSH key.
 
 Every Pi container then gets GitHub access through that token. Prefer a
 fine-grained token limited to the repositories and scopes you actually need.
@@ -174,6 +176,26 @@ The host's `~/.config/gh` directory is deliberately not mounted.
 
 If you want to remove GitHub access from Pi, delete the token file or run the
 container without `GH_TOKEN`.
+
+## Git identity
+
+The launcher reads the host global Git name and email and passes them into the
+container:
+
+```text
+GIT_AUTHOR_NAME
+GIT_AUTHOR_EMAIL
+GIT_COMMITTER_NAME
+GIT_COMMITTER_EMAIL
+GIT_TERMINAL_PROMPT=0
+```
+
+This makes commits and annotated tags work without mounting the host
+`~/.gitconfig`.
+
+The container does **not** have the host GPG signing key, so commits made inside
+the sandbox are unsigned unless you explicitly add a signing key and configure
+Git inside the project.
 
 ## Credentials
 

@@ -28,9 +28,13 @@ if [ -d /shared-auth ]; then
   ln -sfn /shared-auth/mcp-auth.json "$state/mcp-auth.json"
 fi
 
-# If a GitHub token is present, make git use the gh credential helper.
+# If a GitHub token is present, make git use the gh credential helper and
+# rewrite GitHub SSH remotes to HTTPS so existing checkouts work without a
+# mounted SSH key.
 if [ -n "${GH_TOKEN:-}" ]; then
   gh auth setup-git >/dev/null 2>&1 || true
+  git config --global --add url."https://github.com/".insteadOf "git@github.com:" || true
+  git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/" || true
 fi
 
 exec -- "$@"
