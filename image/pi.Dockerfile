@@ -17,16 +17,25 @@ ARG USERNAME=alessio
 ARG UID=1000
 ARG GID=1000
 ARG PI_VERSION=1.4.0
+ARG GH_VERSION=2.102.1
+ARG GH_SHA256=77b9e297e94c50336823d0f84de7ef1be60cba704601fa0d98f129f47a94987b
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \
         ca-certificates \
+        curl \
         fd-find \
         git \
         ripgrep \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd
+
+RUN curl -fsSL -o /tmp/gh.tar.gz \
+        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+    && echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/gh.tar.gz -C /usr/local/bin --strip-components=2 --wildcards '*/bin/gh' \
+    && rm -f /tmp/gh.tar.gz
 
 RUN npm install -g --ignore-scripts \
     "@earendil-works/pi-coding-agent@${PI_VERSION}"

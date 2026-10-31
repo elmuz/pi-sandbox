@@ -134,6 +134,13 @@ done
 # auth.json into it if you want a single /login for all containers.
 mounts+=(--mount "type=bind,src=$STATE_DIR/auth,dst=/shared-auth")
 
+# Optional GitHub CLI token. It is a capability: any Pi container with this
+# environment variable can use GitHub as that token. Prefer a fine-grained PAT.
+if [[ -f "$STATE_DIR/secrets/gh_token" ]]; then
+  mounts+=(--mount "type=bind,src=$STATE_DIR/secrets/gh_token,dst=/secrets/gh_token,ro")
+  envs+=(--env "GH_TOKEN=$(<"$STATE_DIR/secrets/gh_token")")
+fi
+
 # Only projects that declare an MCP server get the control network and token.
 if [[ -f "$workspace/.pi/mcp.json" ]]; then
   networks+=(--network pi-control)

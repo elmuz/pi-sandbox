@@ -28,4 +28,9 @@ if [ -d /shared-auth ]; then
   ln -sfn /shared-auth/mcp-auth.json "$state/mcp-auth.json"
 fi
 
+# If a GitHub token is present, make git use the gh credential helper.
+if [ -n "${GH_TOKEN:-}" ]; then
+  gh auth setup-git >/dev/null 2>&1 || true
+fi
+
 exec -- "$@"

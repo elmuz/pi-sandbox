@@ -150,6 +150,31 @@ APPEND_SYSTEM.md
 
 `fd` is installed in the image, so Pi does not need to download it per project.
 
+## GitHub CLI
+
+The image includes a pinned `gh` release (`2.102.1`) and `git`.
+
+Create a token file:
+
+```bash
+printf '%s\n' '<fine-grained-personal-access-token>' \
+  > "$HOME/.local/share/pi-sandbox/secrets/gh_token"
+chmod 600 "$HOME/.local/share/pi-sandbox/secrets/gh_token"
+```
+
+When that file exists, the launcher:
+
+- mounts it read-only at `/secrets/gh_token`;
+- sets `GH_TOKEN`;
+- lets the entrypoint configure `gh auth setup-git`.
+
+Every Pi container then gets GitHub access through that token. Prefer a
+fine-grained token limited to the repositories and scopes you actually need.
+The host's `~/.config/gh` directory is deliberately not mounted.
+
+If you want to remove GitHub access from Pi, delete the token file or run the
+container without `GH_TOKEN`.
+
 ## Credentials
 
 The shared auth directory is:
@@ -212,6 +237,7 @@ Never commit:
 auth/auth.json
 auth/mcp-auth.json
 secrets/mcp_token
+secrets/gh_token
 mcp/*/.env
 mcp/*/ssh/*
 mcp/*/audit/
