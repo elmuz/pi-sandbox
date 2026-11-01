@@ -10,6 +10,7 @@ mkdir -p \
   "$STATE_DIR/auth" \
   "$STATE_DIR/secrets" \
   "$STATE_DIR/sessions" \
+  "$STATE_DIR/gpg/home" \
   "$STATE_DIR/mcp/catafalco/ssh" \
   "$STATE_DIR/mcp/catafalco/audit"
 
@@ -17,6 +18,8 @@ chmod 700 \
   "$STATE_DIR/auth" \
   "$STATE_DIR/secrets" \
   "$STATE_DIR/sessions" \
+  "$STATE_DIR/gpg" \
+  "$STATE_DIR/gpg/home" \
   "$STATE_DIR/mcp/catafalco" \
   "$STATE_DIR/mcp/catafalco/ssh" \
   "$STATE_DIR/mcp/catafalco/audit"

@@ -15,6 +15,7 @@ pi-sandbox/
 ├── image/
 │   ├── pi.Dockerfile              Pi image definition
 │   ├── entrypoint.sh              copies global config, links shared auth
+│   ├── sandbox-status.ts          container-only footer marker
 │   └── .dockerignore
 ├── compose/compose.yaml           long-running MCP services
 ├── examples/mcp.json              project-level Pi MCP client example
@@ -30,6 +31,7 @@ Runtime state:
 ├── auth/                          shared Pi credentials
 ├── secrets/                       MCP bearer token
 ├── sessions/                      shared per-project sessions
+├── gpg/home/                      public keyring for forwarded signing
 └── mcp/catafalco/                 target config, key, known_hosts, audit
 ```
 
@@ -85,14 +87,24 @@ or:
 pi-sandbox --workspace ~/code/some-project
 ```
 
-Launching from `$HOME` is refused because it would mount the entire home
-directory. Run from a project directory instead.
+Launching from `$HOME` or `/` does not mount that directory. Instead, the
+launcher creates a temporary empty workspace under `${TMPDIR:-/tmp}`, starts Pi
+there, and deletes it when the container exits. This is useful for chats that
+only need network access and the tools in the image.
+
+Scratch runs use a stable `scratch` identity for the Pi state volume and the
+session directory, so a later scratch run can resume an earlier conversation.
+Files created under `/workspace` are temporary and are not kept; use a project
+directory for work that must persist.
 
 Update the image after an Arch package update:
 
 ```bash
 pi-sandbox --update
 ```
+
+`--update` only rebuilds the image and exits. It does not start Pi and works
+from any directory, including `$HOME`.
 
 Build a specific version:
 
@@ -135,9 +147,12 @@ Mounts:
 | `/global-pi/skills/` | host Pi config | read-only |
 | `/global-pi/themes/` | host Pi config | read-only |
 | `/global-pi/extensions/` | host Pi config | read-only |
+| `/gpg` | `$PI_SANDBOX_STATE/gpg/home` | read-write |
+| `/run/gpg-agent/S.gpg-agent` | host gpg-agent extra socket | read-only |
 | `/secrets/mcp_token` | optional MCP token | read-only |
 
-The entrypoint copies the read-only global files into the per-project state
+The two GPG rows are present only when host OpenPGP signing is configured. The
+entrypoint copies the read-only global files into the per-project state
 volume. Credentials are not copied; they are symlinked from `/shared-auth`.
 
 ## Working directory and footer
@@ -152,6 +167,24 @@ concurrent sessions distinguishable.
 
 Sessions created before this change still record `/workspace` as their working
 directory. Start a new session to get the mirrored path in the footer.
+
+A scratch workspace created for `$HOME` or `/` is outside the host home
+directory, so it is mounted at `/workspace`. The built-in footer shows
+`workspace`; the container-only marker shows `⬢ sandbox • scratch`.
+
+Separately, the launcher passes a container-only extension with
+`--extension`. It calls `ctx.ui.setStatus()` and adds a third footer line with
+the project name:
+
+```text
+⬢ sandbox • <project>
+```
+
+The launcher passes the project basename as `PI_SANDBOX_PROJECT`. This stays
+useful when the project is not under the host home directory and the working
+directory is therefore shown as `/workspace`. The built-in footer is not
+replaced, and host Pi never loads that extension, so the marker appears only in
+a `pi-sandbox` container.
 
 ## Clipboard images
 
@@ -250,9 +283,39 @@ GIT_TERMINAL_PROMPT=0
 This makes commits and annotated tags work without mounting the host
 `~/.gitconfig`.
 
-The container does **not** have the host GPG signing key, so commits made inside
-the sandbox are unsigned unless you explicitly add a signing key and configure
-Git inside the project.
+## GPG signing
+
+When the host uses OpenPGP signing (`user.signingkey`, `commit.gpgsign`, or
+`tag.gpgsign`), the launcher forwards the host `gpg-agent` **extra socket** and
+links it where `gpg` inside the container expects it.
+
+Only public key material is copied into `$PI_SANDBOX_STATE/gpg/home` at `/gpg`:
+`pubring.kbx`, `trustdb.gpg` and `gpg.conf`. The private keys stay in the host
+GPG home and are never mounted. The extra socket can sign and decrypt but it
+cannot export secret keys.
+
+Signing is still a capability: any process in the container can ask the host
+agent to sign data. If the passphrase is not cached, the host pinentry appears.
+The launcher starts the host agent if it is not already running.
+
+Git signing settings are injected through `GIT_CONFIG_*` environment variables,
+so the container's persistent `~/.gitconfig` is not modified. Rebuild the image
+once because it now includes `gnupg`:
+
+```bash
+pi-sandbox --update
+```
+
+Some GnuPG versions print this harmless line when listing or using keys through
+the extra socket:
+
+```text
+problem with fast path key listing: Forbidden - ignored
+```
+
+This forwarding supports OpenPGP only. If the host sets `gpg.format=ssh`, the
+launcher skips it. Commits in the sandbox remain unsigned when no host signing
+key or agent socket is available.
 
 ## Credentials
 

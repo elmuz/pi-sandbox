@@ -1,6 +1,7 @@
 # Keep the Pi image build context minimal.
-# Only the Dockerfile and entrypoint are needed.
+# Only the Dockerfile, entrypoint and container-only extension are needed.
 
 *
 !pi.Dockerfile
 !entrypoint.sh
+!sandbox-status.ts

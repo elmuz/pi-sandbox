@@ -27,6 +27,7 @@ RUN apt-get update \
         curl \
         fd-find \
         git \
+        gnupg \
         ripgrep \
         wl-clipboard \
     && rm -rf /var/lib/apt/lists/* \
@@ -57,6 +58,10 @@ RUN install -d -o root -g root -m 0755 \
 
 COPY entrypoint.sh /usr/local/bin/pi-entrypoint
 RUN chmod 0755 /usr/local/bin/pi-entrypoint
+
+# Container-only extension. The launcher loads it explicitly, so host Pi never
+# sees the sandbox footer marker.
+COPY sandbox-status.ts /usr/local/share/pi-sandbox/sandbox-status.ts
 
 USER ${SANDBOX_USER}
 ENV HOME=/home/${SANDBOX_USER}

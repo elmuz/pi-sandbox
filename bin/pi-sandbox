@@ -11,6 +11,11 @@
 #   cd /path/to/project
 #   pi-sandbox [pi arguments...]
 #   pi-sandbox --workspace /path/to/project [pi arguments...]
+#   pi-sandbox --update
+#
+# Starting in $HOME or / uses a temporary empty workspace instead of mounting
+# that directory. The temporary directory is removed when the container exits.
+# Its Pi state and sessions use the stable name "scratch".
 #
 # The MCP control network is attached only when the project has
 # .pi/mcp.json. The MCP bearer token is read from
@@ -34,6 +39,7 @@ PI_BASE_IMAGE="${PI_BASE_IMAGE:-node:24-trixie-slim}"
 
 workspace="${PI_WORKSPACE:-$PWD}"
 update_image=0
+scratch_workspace_dir=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -55,31 +61,66 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Rebuilding the image does not need a workspace and must work from anywhere.
+if [[ "$update_image" -eq 1 ]]; then
+  echo "Rebuilding Pi image $PI_IMAGE from $PI_BASE_IMAGE with PI_VERSION=$PI_VERSION ..."
+  podman build --pull --no-cache \
+    --build-arg "BASE_IMAGE=${PI_BASE_IMAGE}" \
+    --build-arg "PI_VERSION=$PI_VERSION" \
+    -t "$PI_IMAGE" \
+    -f "$IMAGE_DIR/pi.Dockerfile" \
+    "$IMAGE_DIR"
+  exit 0
+fi
+
 if [[ ! -d "$workspace" ]]; then
   echo "Workspace is not a directory: $workspace" >&2
   exit 2
 fi
 
 workspace="$(realpath "$workspace")"
+home_dir="$(realpath "$HOME" 2>/dev/null || printf '%s\n' "$HOME")"
 
-if [[ "$workspace" == "$HOME" ]]; then
-  echo "Refusing to mount the whole home directory read-write: $workspace" >&2
-  echo "cd into a project, or run: pi-sandbox --workspace /path/to/project" >&2
-  exit 2
+# Mounting $HOME or / read-write would expose far more than a project. For a
+# quick chat that does not need local files, substitute a disposable empty
+# directory. State and sessions still use a stable "scratch" identity.
+if [[ "$workspace" == "/" || "$workspace" == "$home_dir" ]]; then
+  broad_workspace="$workspace"
+  scratch_workspace_dir="$(mktemp -d "${TMPDIR:-/tmp}/pi-sandbox-scratch.XXXXXX")"
+  workspace="$scratch_workspace_dir"
+  echo "Workspace is too broad to mount read-write: $broad_workspace" >&2
+  echo "Using temporary workspace $workspace" >&2
+fi
+
+if [[ -n "$scratch_workspace_dir" ]]; then
+  cleanup_scratch() {
+    rm -rf -- "$scratch_workspace_dir"
+  }
+  trap cleanup_scratch EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 fi
 
 case "$workspace" in
-  /|"$HOME/.ssh"|"$HOME/.pi"|"$STATE_DIR")
+  /|"$home_dir/.ssh"|"$home_dir/.pi"|"$STATE_DIR")
     echo "Refusing to mount sensitive path read-write: $workspace" >&2
     exit 2
     ;;
 esac
 
-project_name="$(basename "$workspace" | sed 's/[^A-Za-z0-9_.-]/-/g')"
-project_id="$(printf '%s' "$workspace" | sha256sum | cut -c1-10)"
-state_volume="pi-state-${project_id}"
-home_volume="pi-home-${project_id}"
-session_dir="$STATE_DIR/sessions/${project_name}-${project_id}"
+if [[ -n "$scratch_workspace_dir" ]]; then
+  project_name="scratch"
+  project_id="scratch"
+  state_volume="pi-state-scratch"
+  home_volume="pi-home-scratch"
+  session_dir="$STATE_DIR/sessions/scratch"
+else
+  project_name="$(basename "$workspace" | sed 's/[^A-Za-z0-9_.-]/-/g')"
+  project_id="$(printf '%s' "$workspace" | sha256sum | cut -c1-10)"
+  state_volume="pi-state-${project_id}"
+  home_volume="pi-home-${project_id}"
+  session_dir="$STATE_DIR/sessions/${project_name}-${project_id}"
+fi
 
 # Pi's footer shows the process working directory. Mirror the project at its
 # host path and start Pi there, so the footer identifies the actual project
@@ -103,15 +144,7 @@ podman network exists pi-egress >/dev/null 2>&1 \
 podman network exists pi-control >/dev/null 2>&1 \
   || podman network create --internal pi-control >/dev/null
 
-if [[ "$update_image" -eq 1 ]]; then
-  echo "Rebuilding Pi image $PI_IMAGE from $PI_BASE_IMAGE with PI_VERSION=$PI_VERSION ..."
-  podman build --pull --no-cache \
-    --build-arg "BASE_IMAGE=${PI_BASE_IMAGE}" \
-    --build-arg "PI_VERSION=$PI_VERSION" \
-    -t "$PI_IMAGE" \
-    -f "$IMAGE_DIR/pi.Dockerfile" \
-    "$IMAGE_DIR"
-elif ! podman image exists "$PI_IMAGE"; then
+if ! podman image exists "$PI_IMAGE"; then
   echo "Building Pi image $PI_IMAGE from $PI_BASE_IMAGE ..."
   podman build \
     --build-arg "BASE_IMAGE=${PI_BASE_IMAGE}" \
@@ -125,6 +158,7 @@ envs=(
   --env "HOME=/home/$USER"
   --env "PI_CODING_AGENT_DIR=/state/pi-agent"
   --env "PI_CODING_AGENT_SESSION_DIR=/sessions"
+  --env "PI_SANDBOX_PROJECT=$project_name"
   --env "GIT_TERMINAL_PROMPT=0"
 )
 networks=(--network pi-egress)
@@ -157,6 +191,65 @@ if [[ -n "$git_name" ]]; then
 fi
 if [[ -n "$git_email" ]]; then
   envs+=(--env "GIT_AUTHOR_EMAIL=$git_email" --env "GIT_COMMITTER_EMAIL=$git_email")
+fi
+
+# Forward the host gpg-agent extra socket for commit and tag signing. Only
+# public key material is copied into the container: private keys stay on the
+# host, and the extra socket cannot export them. Set gpg.format=ssh on the host
+# to opt out; SSH signing is not forwarded by this launcher.
+gpg_format="$(git config --global --get gpg.format 2>/dev/null || true)"
+signing_key="$(git config --global --get user.signingkey 2>/dev/null || true)"
+commit_gpgsign="$(git config --global --get commit.gpgsign 2>/dev/null || true)"
+tag_gpgsign="$(git config --global --get tag.gpgsign 2>/dev/null || true)"
+if [[ "${gpg_format:-openpgp}" == "openpgp" ]] \
+  && [[ -n "$signing_key" || "$commit_gpgsign" == "true" || "$tag_gpgsign" == "true" ]] \
+  && command -v gpgconf >/dev/null 2>&1; then
+  host_gpg_home="$(gpgconf --list-dirs homedir 2>/dev/null || true)"
+  gpg_extra_socket="$(gpgconf --list-dirs agent-extra-socket 2>/dev/null || true)"
+
+  if [[ -n "$gpg_extra_socket" && ! -S "$gpg_extra_socket" ]]; then
+    gpgconf --launch gpg-agent >/dev/null 2>&1 || true
+  fi
+
+  if [[ -n "$host_gpg_home" && -n "$gpg_extra_socket" && -S "$gpg_extra_socket" ]]; then
+    gpg_home="$STATE_DIR/gpg/home"
+    install -d -m 700 "$STATE_DIR/gpg" "$gpg_home"
+    for file in pubring.kbx trustdb.gpg gpg.conf; do
+      if [[ -f "$host_gpg_home/$file" ]]; then
+        install -m 600 "$host_gpg_home/$file" "$gpg_home/$file"
+      fi
+    done
+
+    # gpg may put its agent socket below /run/user when a runtime dir exists;
+    # leave that subtree writable so the entrypoint can link the forwarded
+    # socket wherever gpgconf reports.
+    mounts+=(
+      --tmpfs "/run/user:rw,nosuid,nodev,size=16m,mode=1777"
+      --mount "type=bind,src=$gpg_home,dst=/gpg"
+      --mount "type=bind,src=$gpg_extra_socket,dst=/run/gpg-agent/S.gpg-agent,ro"
+    )
+    envs+=(--env "GNUPGHOME=/gpg")
+
+    git_config=("gpg.program=gpg")
+    if [[ -n "$signing_key" ]]; then
+      git_config+=("user.signingkey=$signing_key")
+    fi
+    if [[ "$commit_gpgsign" == "true" ]]; then
+      git_config+=("commit.gpgsign=true")
+    fi
+    if [[ "$tag_gpgsign" == "true" ]]; then
+      git_config+=("tag.gpgsign=true")
+    fi
+
+    # Git reads these without writing to the container's ~/.gitconfig.
+    envs+=(--env "GIT_CONFIG_COUNT=${#git_config[@]}")
+    for i in "${!git_config[@]}"; do
+      envs+=(
+        --env "GIT_CONFIG_KEY_$i=${git_config[$i]%%=*}"
+        --env "GIT_CONFIG_VALUE_$i=${git_config[$i]#*=}"
+      )
+    done
+  fi
 fi
 
 # Global, non-secret Pi configuration. Never mount auth.json, trust.json,
@@ -195,7 +288,7 @@ if [[ -f "$workspace/.pi/mcp.json" ]]; then
   fi
 fi
 
-exec podman run --rm -it \
+podman run --rm -it \
   --name "pi-${project_name}-$$" \
   --label "pi-sandbox.project=$project_name" \
   --userns=keep-id \
@@ -216,4 +309,6 @@ exec podman run --rm -it \
   "${mirror_mounts[@]}" \
   "${envs[@]}" \
   "${networks[@]}" \
-  "$PI_IMAGE" pi "$@"
+  "$PI_IMAGE" pi \
+  --extension /usr/local/share/pi-sandbox/sandbox-status.ts \
+  "$@"

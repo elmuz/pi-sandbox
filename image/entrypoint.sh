@@ -28,6 +28,18 @@ if [ -d /shared-auth ]; then
   ln -sfn /shared-auth/mcp-auth.json "$state/mcp-auth.json"
 fi
 
+# Forwarded gpg-agent socket: place it where gpg in this container expects
+# its agent socket. GNUPGHOME contains public keys only; signing happens in
+# the host's gpg-agent through the extra socket.
+if [ -S /run/gpg-agent/S.gpg-agent ] && [ -n "${GNUPGHOME:-}" ]; then
+  socket_dir="$(gpgconf --list-dirs socketdir 2>/dev/null || true)"
+  if [ -n "$socket_dir" ]; then
+    mkdir -p "$socket_dir"
+    chmod 700 "$socket_dir" 2>/dev/null || true
+    ln -sfn /run/gpg-agent/S.gpg-agent "$socket_dir/S.gpg-agent"
+  fi
+fi
+
 # If a GitHub token is present, make git use the gh credential helper and
 # rewrite GitHub SSH remotes to HTTPS so existing checkouts work without a
 # mounted SSH key.
