@@ -29,6 +29,9 @@ jobs:
           scandir: .
           severity: warning
 
+      - name: Run MCP contract self-test
+        run: scripts/mcp-selftest.sh
+
       - name: Lint Dockerfile
         uses: hadolint/hadolint-action@v3.5.0
         with:

@@ -1,5 +1,7 @@
 # pi-sandbox
 
+![pi-sandbox logo](assets/pi-sandbox.jpg)
+
 Containerized Pi coding-agent harness.
 
 The repository contains **source assets**. Runtime state, credentials, session
@@ -11,15 +13,17 @@ history and target-specific MCP configuration live outside the repository in
 ```text
 pi-sandbox/
 ├── .github/workflows/ci.yml       lint and image build
+├── assets/pi-sandbox.jpg          project logo
 ├── bin/pi-sandbox                 interactive launcher
 ├── image/
 │   ├── pi.Dockerfile              Pi image definition
 │   ├── entrypoint.sh              copies global config, links shared auth
 │   ├── sandbox-status.ts          container-only footer marker
 │   └── .dockerignore
-├── compose/compose.yaml           long-running MCP services
+├── compose/compose.yaml           optional MCP Compose scaffold
 ├── examples/mcp.json              project-level Pi MCP client example
-├── examples/mcp/catafalco/        target config templates
+├── examples/mcp/catafalco/        optional target config templates
+├── scripts/mcp-selftest.sh        contract checks without an MCP stack
 ├── install.sh                     creates state dirs and symlinks the launcher
 └── README.md
 ```
@@ -29,7 +33,7 @@ Runtime state:
 ```text
 ~/.local/share/pi-sandbox/
 ├── auth/                          shared Pi credentials
-├── secrets/                       MCP bearer token
+├── secrets/                       MCP bearer token (mode 0600 or 0400)
 ├── sessions/                      shared per-project sessions
 ├── gpg/home/                      public keyring for forwarded signing
 └── mcp/catafalco/                 target config, key, known_hosts, audit
@@ -41,7 +45,8 @@ Runtime state:
 
 `.github/workflows/ci.yml` runs on pushes to `main` and on pull requests:
 
-- ShellCheck on the launcher, installer and entrypoint;
+- ShellCheck on the launcher, installer, self-test and entrypoint;
+- the MCP contract self-test, which does not need an MCP stack;
 - Hadolint on `image/pi.Dockerfile`;
 - yamllint on the Compose file, examples and workflow;
 - markdownlint on Markdown files;
@@ -61,9 +66,19 @@ This:
 
 - creates the state directories with private modes;
 - symlinks `~/.local/bin/pi-sandbox` to this repository;
-- installs example MCP target files only when they do not already exist.
+- installs example MCP target files only when they do not already exist;
+- warns when `$PI_SANDBOX_STATE/secrets/mcp_token` is missing.
 
-It does not create or copy credentials.
+To import the shared token from the server-mcp deployment:
+
+```bash
+PI_SANDBOX_MCP_TOKEN_FILE=~/.config/server-mcp/secrets/http-token \
+  ./install.sh
+```
+
+The token is copied to `$PI_SANDBOX_STATE/secrets/mcp_token` with mode 0600.
+An existing token is never overwritten unless `--force` is passed. The
+installer does not create or copy any other credential.
 
 ## Build and run
 
@@ -149,7 +164,10 @@ Mounts:
 | `/global-pi/extensions/` | host Pi config | read-only |
 | `/gpg` | `$PI_SANDBOX_STATE/gpg/home` | read-write |
 | `/run/gpg-agent/S.gpg-agent` | host gpg-agent extra socket | read-only |
-| `/secrets/mcp_token` | optional MCP token | read-only |
+
+The MCP token is not mounted. The launcher validates the host file and passes
+its value as `--env MCP_TOKEN`, so the file does not need to exist inside the
+container.
 
 The two GPG rows are present only when host OpenPGP signing is configured. The
 entrypoint copies the read-only global files into the per-project state
@@ -350,26 +368,111 @@ pi-sandbox --continue
 
 Do not open the same session concurrently from two Pi instances.
 
-## Project MCP config
+## MCP contract
 
-Only projects with `.pi/mcp.json` join the internal `pi-control` network.
-See `examples/mcp.json`.
+This repository only provides the client side of the server-mcp deployment. It
+does not start, stop, restart or update the MCP containers.
 
-The launcher passes `MCP_TOKEN` only when both the project MCP file and
-`$PI_SANDBOX_STATE/secrets/mcp_token` exist.
+The contract is:
+
+- The Pi sandbox and both MCP containers (`mcp-remote` and `mcp-disk`) are the
+  only members of the internal control bridge. Its name is
+  `$PI_SANDBOX_MCP_NETWORK`, default `pi-control`.
+- The MCP services publish no host port. Inside the container, Pi reaches them
+  at `http://mcp-remote:8000/mcp` and `http://mcp-disk:8000/mcp`.
+- One bearer token is shared by both services. Its path in this repository is
+  `$PI_SANDBOX_MCP_TOKEN_FILE`, default
+  `$PI_SANDBOX_STATE/secrets/mcp_token`.
+- The token file must be a regular, non-empty, single-line file with mode 0600
+  or 0400. Group/other access is refused, matching the server-mcp rule.
+- The launcher exports the value as `MCP_TOKEN` and passes `--env MCP_TOKEN`.
+  The value is never placed in the podman argv, printed by `--dry-run`, or
+  mounted into the container.
+
+A project opts in by containing `.pi/mcp.json`. See `examples/mcp.json`.
+
+For an opted-in project, the launcher creates the control network with
+`--internal` if it does not exist. If the network exists but no MCP container is
+attached, it prints a hint and continues; start the server-mcp stack separately
+with systemd.
+
+If a project has `.pi/mcp.json` but the token is missing, the launcher exits 2
+before `podman run` and prints the fix command:
+
+```bash
+install -m 600 ~/.config/server-mcp/secrets/http-token \
+  "$PI_SANDBOX_STATE/secrets/mcp_token"
+```
+
+Useful options:
+
+```bash
+# Print the final podman command; MCP_TOKEN is shown without its value.
+pi-sandbox --dry-run
+
+# Import a token, then launch.
+pi-sandbox --mcp-token-file ~/.config/server-mcp/secrets/http-token
+
+# Skip the control network and token for this launch only.
+pi-sandbox --no-mcp
+```
+
+`PI_SANDBOX_ALLOW_NO_MCP_TOKEN=1` is a diagnostic escape hatch for launching
+with `.pi/mcp.json` but no token. It is not intended for normal use.
+
+Run the contract checks without an MCP stack:
+
+```bash
+scripts/mcp-selftest.sh
+```
+
+### Rotating the token
+
+Replace the token in the server-mcp deployment, restart the MCP target, then
+import the same value into the sandbox:
+
+```bash
+systemctl --user restart server-mcp.target
+pi-sandbox --mcp-token-file ~/.config/server-mcp/secrets/http-token
+```
+
+### Failure modes
+
+| Symptom | Likely cause | Check |
+| --- | --- | --- |
+| `401 Unauthorized` | Wrong or rotated token | Compare both token files |
+| DNS failure | Not on control net or MCP down | Check network and target |
+| Permission denied | Token is not mode 0600/0400 | `chmod 600` the token |
+| Missing token | No sandbox token copy | Run the printed `install` |
+
+For a 401, compare `$PI_SANDBOX_STATE/secrets/mcp_token` with
+`~/.config/server-mcp/secrets/http-token`, then restart the MCP target. For a
+DNS or connection failure, check `podman network inspect pi-control`,
+`podman ps -a --filter network=pi-control` and
+`systemctl --user status server-mcp.target`.
+
+A Pi process running directly on the host is not on `pi-control` and cannot
+reach these endpoints. Use stdio transport for a host-run Pi, or explicitly
+publish a loopback-only port in the MCP deployment. The sandbox never publishes
+a host port by default.
 
 ## MCP services
 
-The Compose scaffold is in `compose/compose.yaml`. Set the state directory:
+The authoritative deployment is the server-mcp Quadlet stack: `mcp-remote` and
+`mcp-disk`, on `pi-control` plus the MCP-owned `mcp-egress` network. The MCP
+image belongs to the `server-mcp` repository and is not built here.
+
+The Compose file in `compose/compose.yaml` is an optional scaffold for one
+remote target. It uses the same internal network name variable and maps the
+pi-sandbox state copies onto the server-mcp container paths. It does not join
+the MCP's egress network and does not publish a host port. Set the state
+directory before using it:
 
 ```bash
 export PI_SANDBOX_STATE="$HOME/.local/share/pi-sandbox"
-export MCP_IMAGE=remote-server-mcp:local
+export MCP_IMAGE=localhost/server-mcp:dev
 podman compose -f compose/compose.yaml up -d
 ```
-
-The MCP image itself belongs to the `server-mcp` repository and is not built
-here.
 
 ## Not tracked
 

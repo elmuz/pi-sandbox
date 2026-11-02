@@ -11,6 +11,9 @@
 #   cd /path/to/project
 #   pi-sandbox [pi arguments...]
 #   pi-sandbox --workspace /path/to/project [pi arguments...]
+#   pi-sandbox --dry-run
+#   pi-sandbox --mcp-token-file PATH
+#   pi-sandbox --no-mcp
 #   pi-sandbox --update
 #
 # Starting in $HOME or / uses a temporary empty workspace instead of mounting
@@ -18,8 +21,11 @@
 # Its Pi state and sessions use the stable name "scratch".
 #
 # The MCP control network is attached only when the project has
-# .pi/mcp.json. The MCP bearer token is read from
-# $PI_SANDBOX_STATE/secrets/mcp_token when that file exists.
+# .pi/mcp.json. The shared MCP bearer token is read from
+# $PI_SANDBOX_STATE/secrets/mcp_token when that file exists, validated against
+# the server-mcp token rules, and passed to the container as MCP_TOKEN through
+# the environment. The token value never appears in the podman argv or in
+# --dry-run output.
 #
 # Source assets live in this repository. Writable runtime state lives in
 # ${XDG_DATA_HOME:-$HOME/.local/share}/pi-sandbox by default.
@@ -30,6 +36,66 @@ SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 REPO_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 IMAGE_DIR="$REPO_DIR/image"
 STATE_DIR="${PI_SANDBOX_STATE:-${XDG_DATA_HOME:-$HOME/.local/share}/pi-sandbox}"
+MCP_NETWORK="${PI_SANDBOX_MCP_NETWORK:-pi-control}"
+MCP_TOKEN_FILE="${PI_SANDBOX_MCP_TOKEN_FILE:-$STATE_DIR/secrets/mcp_token}"
+MCP_PROJECT_CONFIG=".pi/mcp.json"
+MCP_TOKEN_VALUE=""
+MCP_TOKEN_AVAILABLE=0
+
+# Match the server-mcp token-file rule: regular, non-empty, one line, and
+# readable by the owner only. The value is kept in a variable, never in argv.
+validate_mcp_token_file() {
+  local file="$1"
+  local mode=""
+  local -a token_lines=()
+
+  if [[ ! -f "$file" ]]; then
+    echo "MCP token file is not a regular file: $file" >&2
+    return 1
+  fi
+
+  mode="$(stat -Lc '%a' "$file" 2>/dev/null || true)"
+  case "$mode" in
+    400|600|0400|0600) ;;
+    *)
+      echo "MCP token file must be mode 0600 or 0400 without group/other access (found ${mode:-unknown}): $file" >&2
+      return 1
+      ;;
+  esac
+
+  if ! mapfile -t token_lines < "$file"; then
+    echo "MCP token file is not readable: $file" >&2
+    return 1
+  fi
+
+  if [[ "${#token_lines[@]}" -eq 0 || -z "${token_lines[0]:-}" ]]; then
+    echo "MCP token file is empty: $file" >&2
+    return 1
+  fi
+
+  if [[ "${#token_lines[@]}" -ne 1 ]]; then
+    echo "MCP token file must contain a single line: $file" >&2
+    return 1
+  fi
+
+  MCP_TOKEN_VALUE="${token_lines[0]}"
+}
+
+import_mcp_token() {
+  local source="$1"
+  local source_real=""
+  local destination_real=""
+
+  validate_mcp_token_file "$source" || exit 2
+
+  source_real="$(realpath "$source")"
+  destination_real="$(realpath -m "$MCP_TOKEN_FILE")"
+
+  if [[ "$source_real" != "$destination_real" ]]; then
+    install -d -m 700 "$(dirname "$MCP_TOKEN_FILE")"
+    install -m 600 "$source" "$MCP_TOKEN_FILE"
+  fi
+}
 
 host_pi_version="$(pi --version 2>/dev/null | head -n 1 | tr -d '[:space:]' || true)"
 PI_VERSION="${PI_VERSION:-${host_pi_version:-1.4.0}}"
@@ -39,6 +105,9 @@ PI_BASE_IMAGE="${PI_BASE_IMAGE:-node:24-trixie-slim}"
 
 workspace="${PI_WORKSPACE:-$PWD}"
 update_image=0
+dry_run=0
+no_mcp=0
+mcp_token_import=""
 scratch_workspace_dir=""
 
 while [[ $# -gt 0 ]]; do
@@ -50,6 +119,18 @@ while [[ $# -gt 0 ]]; do
     --update)
       update_image=1
       shift
+      ;;
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
+    --no-mcp)
+      no_mcp=1
+      shift
+      ;;
+    --mcp-token-file)
+      mcp_token_import="${2:?--mcp-token-file needs a path}"
+      shift 2
       ;;
     --)
       shift
@@ -138,13 +219,55 @@ fi
 mkdir -p "$session_dir" "$STATE_DIR/auth" "$STATE_DIR/secrets"
 chmod 700 "$STATE_DIR/auth" "$STATE_DIR/secrets" "$session_dir"
 
-# Create the fixed networks used by both the Pi wrapper and Compose.
-podman network exists pi-egress >/dev/null 2>&1 \
-  || podman network create pi-egress >/dev/null
-podman network exists pi-control >/dev/null 2>&1 \
-  || podman network create --internal pi-control >/dev/null
+# Resolve the MCP contract before any podman command. A project opts in with
+# .pi/mcp.json; --no-mcp skips the contract for one launch. If a token exists it
+# is validated even when this project does not use MCP, so a bad global token
+# cannot silently reach a later launch.
+mcp_enabled=0
+if [[ "$no_mcp" -eq 0 && -f "$workspace/$MCP_PROJECT_CONFIG" ]]; then
+  mcp_enabled=1
+fi
 
-if ! podman image exists "$PI_IMAGE"; then
+if [[ "$no_mcp" -eq 0 ]]; then
+  if [[ -n "$mcp_token_import" ]]; then
+    import_mcp_token "$mcp_token_import"
+  fi
+
+  if [[ -e "$MCP_TOKEN_FILE" ]]; then
+    validate_mcp_token_file "$MCP_TOKEN_FILE" || exit 2
+    MCP_TOKEN_AVAILABLE=1
+  fi
+fi
+
+if [[ "$mcp_enabled" -eq 1 && "$MCP_TOKEN_AVAILABLE" -eq 0 ]]; then
+  if [[ "${PI_SANDBOX_ALLOW_NO_MCP_TOKEN:-0}" == "1" ]]; then
+    echo "Warning: launching with $MCP_PROJECT_CONFIG but no MCP token (PI_SANDBOX_ALLOW_NO_MCP_TOKEN=1)." >&2
+  else
+    echo "Missing MCP token for $workspace/$MCP_PROJECT_CONFIG: $MCP_TOKEN_FILE" >&2
+    echo "Install it with: install -m 600 ~/.config/server-mcp/secrets/http-token \"$MCP_TOKEN_FILE\"" >&2
+    echo "Or import it with: pi-sandbox --mcp-token-file ~/.config/server-mcp/secrets/http-token" >&2
+    echo "Set PI_SANDBOX_ALLOW_NO_MCP_TOKEN=1 only for diagnostics, or pass --no-mcp to skip MCP." >&2
+    exit 2
+  fi
+fi
+
+# Create the fixed networks used by the Pi wrapper. The MCP network is only
+# needed when the project opts in; it is created internal and never started.
+if [[ "$dry_run" -eq 0 ]]; then
+  podman network exists pi-egress >/dev/null 2>&1 \
+    || podman network create pi-egress >/dev/null
+
+  if [[ "$mcp_enabled" -eq 1 ]]; then
+    podman network exists "$MCP_NETWORK" >/dev/null 2>&1 \
+      || podman network create --internal "$MCP_NETWORK" >/dev/null
+
+    if [[ -z "$(podman ps -a --filter "network=$MCP_NETWORK" --format '{{.ID}}' 2>/dev/null || true)" ]]; then
+      echo "Hint: no MCP container is attached to $MCP_NETWORK; the server-mcp stack appears to be down." >&2
+    fi
+  fi
+fi
+
+if [[ "$dry_run" -eq 0 ]] && ! podman image exists "$PI_IMAGE"; then
   echo "Building Pi image $PI_IMAGE from $PI_BASE_IMAGE ..."
   podman build \
     --build-arg "BASE_IMAGE=${PI_BASE_IMAGE}" \
@@ -279,36 +402,49 @@ if [[ -f "$STATE_DIR/secrets/gh_token" ]]; then
 fi
 
 # Only projects that declare an MCP server get the control network and token.
-if [[ -f "$workspace/.pi/mcp.json" ]]; then
-  networks+=(--network pi-control)
+# MCP_TOKEN is exported here and inherited by `podman run --env MCP_TOKEN`; its
+# value is never placed in the podman argv.
+if [[ "$mcp_enabled" -eq 1 ]]; then
+  networks+=(--network "$MCP_NETWORK")
 
-  if [[ -f "$STATE_DIR/secrets/mcp_token" ]]; then
-    mounts+=(--mount "type=bind,src=$STATE_DIR/secrets/mcp_token,dst=/secrets/mcp_token,ro")
-    envs+=(--env "MCP_TOKEN=$(<"$STATE_DIR/secrets/mcp_token")")
+  if [[ "$MCP_TOKEN_AVAILABLE" -eq 1 ]]; then
+    export MCP_TOKEN="$MCP_TOKEN_VALUE"
+    envs+=(--env MCP_TOKEN)
   fi
 fi
 
-podman run --rm -it \
-  --name "pi-${project_name}-$$" \
-  --label "pi-sandbox.project=$project_name" \
-  --userns=keep-id \
-  --user "$(id -u):$(id -g)" \
-  --init \
-  --read-only \
-  --cap-drop=ALL \
-  --security-opt=no-new-privileges \
-  --pids-limit=512 \
-  --memory=4g \
-  --workdir "$container_workspace" \
-  --mount "type=volume,src=$home_volume,dst=/home/$USER" \
-  --mount "type=bind,src=$workspace,dst=/workspace" \
-  --mount "type=volume,src=$state_volume,dst=/state/pi-agent" \
-  --mount "type=bind,src=$session_dir,dst=/sessions" \
-  --tmpfs /tmp:rw,nosuid,nodev \
-  "${mounts[@]}" \
-  "${mirror_mounts[@]}" \
-  "${envs[@]}" \
-  "${networks[@]}" \
-  "$PI_IMAGE" pi \
-  --extension /usr/local/share/pi-sandbox/sandbox-status.ts \
-  "$@"
+run_cmd=(
+  podman run --rm -it \
+    --name "pi-${project_name}-$$" \
+    --label "pi-sandbox.project=$project_name" \
+    --userns=keep-id \
+    --user "$(id -u):$(id -g)" \
+    --init \
+    --read-only \
+    --cap-drop=ALL \
+    --security-opt=no-new-privileges \
+    --pids-limit=512 \
+    --memory=4g \
+    --workdir "$container_workspace" \
+    --mount "type=volume,src=$home_volume,dst=/home/$USER" \
+    --mount "type=bind,src=$workspace,dst=/workspace" \
+    --mount "type=volume,src=$state_volume,dst=/state/pi-agent" \
+    --mount "type=bind,src=$session_dir,dst=/sessions" \
+    --tmpfs "/tmp:rw,nosuid,nodev" \
+    "${mounts[@]}" \
+    "${mirror_mounts[@]}" \
+    "${envs[@]}" \
+    "${networks[@]}" \
+    "$PI_IMAGE" pi \
+    --extension /usr/local/share/pi-sandbox/sandbox-status.ts \
+    "$@"
+)
+
+if [[ "$dry_run" -eq 1 ]]; then
+  # The command only contains `--env MCP_TOKEN`; the value is not in argv.
+  printf '%q ' "${run_cmd[@]}"
+  printf '\n'
+  exit 0
+fi
+
+"${run_cmd[@]}"

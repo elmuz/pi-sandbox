@@ -1,19 +1,32 @@
-# Example project-level MCP configuration.
+# Example project-level MCP configuration for the server-mcp deployment.
 #
-# Only projects that contain .pi/mcp.json get the pi-control network and the
-# MCP_TOKEN environment variable.
+# Only projects that contain .pi/mcp.json get the internal pi-control network
+# and the MCP_TOKEN environment variable.
 #
-# The token is read by the wrapper from:
+# The MCP services publish no host port. They are reachable by their Podman DNS
+# names on pi-control: mcp-remote and mcp-disk, both on port 8000 at /mcp.
+#
+# The token is read by the launcher from:
 #   $PI_SANDBOX_STATE/secrets/mcp_token
+#
+# It must be a single-line file with mode 0600 or 0400. The launcher exports it
+# as MCP_TOKEN and never places the value in the podman argv.
 
 {
   "mcpServers": {
-    "catafalco": {
-      "url": "http://mcp-catafalco:8000/mcp",
+    "mcp-remote": {
+      "url": "http://mcp-remote:8000/mcp",
       "headers": {
         "Authorization": "Bearer ${MCP_TOKEN}"
       },
-      "description": "Manage Docker services and inspect host health on catafalco"
+      "description": "Manage Docker services and inspect host health"
+    },
+    "mcp-disk": {
+      "url": "http://mcp-disk:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_TOKEN}"
+      },
+      "description": "Inspect disk health and SMART status"
     }
   }
 }

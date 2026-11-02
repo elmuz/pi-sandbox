@@ -11,6 +11,9 @@
 # ownership stable.
 
 ARG BASE_IMAGE=node:24-trixie-slim
+# The base image is parameterised for local and CI overrides; the default tag
+# is explicit.
+# hadolint ignore=DL3006
 FROM ${BASE_IMAGE}
 
 ARG SANDBOX_USER=alessio

@@ -1,19 +1,34 @@
-# Long-running MCP services.
+# Optional long-running MCP services.
 #
-# Pi itself is launched interactively by ~/.local/bin/pi-sandbox, not by this
-# Compose file. This file currently defines one MCP target: catafalco.
+# The authoritative deployment is the server-mcp Quadlet stack
+# (mcp-remote.container and mcp-disk.container). This Compose file is an
+# alternative scaffold for one remote target: catafalco.
 #
-# The MCP image is not built by this scaffold. Set MCP_IMAGE to a locally built
-# image once server-mcp has a container image, or add a build: block here.
+# Network contract:
+#   - the only shared network is the internal pi-control bridge;
+#   - the MCP joins its own mcp-egress network in the server-mcp deployment,
+#     never the Pi sandbox's internet network;
+#   - no host port is published. Clients use the DNS name on pi-control.
 #
-# Runtime state is outside this repository. Set PI_SANDBOX_STATE to the
-# operator state directory, for example:
-#   export PI_SANDBOX_STATE="$HOME/.local/share/pi-sandbox"
+# Quadlet mapping:
+#   ~/.config/server-mcp/remote.yaml        -> /etc/server-mcp/config.yaml
+#   ~/.config/server-mcp/.env               -> /etc/server-mcp/.env
+#   ~/.config/server-mcp/ssh/id_ed25519     -> /run/secrets/ssh_key
+#   ~/.config/server-mcp/known_hosts        -> /etc/server-mcp/known_hosts
+#   ~/.config/server-mcp/secrets/http-token -> /run/secrets/mcp_token
+#   ~/.local/state/server-mcp/audit         -> /var/lib/server-mcp
+#
+# This Compose scaffold mounts the pi-sandbox state copies at the same container
+# paths, so the same image and configuration layout can be used. Set
+# PI_SANDBOX_STATE before running podman compose.
+#
+# The image is not built here; it belongs to the server-mcp repository:
+#   podman build -f container/Dockerfile -t localhost/server-mcp:dev .
 
 name: pi-sandbox
 
 x-mcp-common: &mcp-common
-  image: ${MCP_IMAGE:-remote-server-mcp:local}
+  image: ${MCP_IMAGE:-localhost/server-mcp:dev}
   userns_mode: keep-id
   user: "1000:1000"
   read_only: true
@@ -26,7 +41,6 @@ x-mcp-common: &mcp-common
   restart: unless-stopped
   networks:
     - pi-control
-    - pi-egress
   healthcheck:
     test:
       - CMD
@@ -39,9 +53,9 @@ x-mcp-common: &mcp-common
     start_period: 20s
 
 services:
-  mcp-catafalco:
+  mcp-remote:
     <<: *mcp-common
-    container_name: mcp-catafalco
+    container_name: mcp-remote
     environment:
       REMOTE_SERVER_MCP_CONFIG: /etc/server-mcp/config.yaml
     volumes:
@@ -63,7 +77,5 @@ services:
 
 networks:
   pi-control:
-    name: pi-control
+    name: ${PI_SANDBOX_MCP_NETWORK:-pi-control}
     internal: true
-  pi-egress:
-    name: pi-egress
