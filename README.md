@@ -1,8 +1,20 @@
-# pi-sandbox
+<p align="center">
+  <img src="assets/pi-sandbox.jpg" alt="pi-sandbox logo" width="180">
+</p>
 
-![pi-sandbox logo](assets/pi-sandbox.jpg)
+<h1 align="center">pi-sandbox</h1>
 
-Containerized Pi coding-agent harness.
+<p align="center"><em>Containerized Pi coding-agent harness.</em></p>
+
+<!-- markdownlint-disable MD013 -->
+<p align="center">
+  <a href="https://github.com/elmuz/pi-sandbox/actions/workflows/ci.yml"><img src="https://github.com/elmuz/pi-sandbox/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://www.shellcheck.net/"><img src="https://img.shields.io/badge/shellcheck-passing-brightgreen.svg" alt="ShellCheck"></a>
+  <a href="https://github.com/hadolint/hadolint"><img src="https://img.shields.io/badge/hadolint-passing-brightgreen.svg" alt="Hadolint"></a>
+  <a href="https://yamllint.readthedocs.io/"><img src="https://img.shields.io/badge/yamllint-passing-brightgreen.svg" alt="yamllint"></a>
+  <a href="https://github.com/DavidAnson/markdownlint"><img src="https://img.shields.io/badge/markdownlint-passing-brightgreen.svg" alt="markdownlint"></a>
+</p>
+<!-- markdownlint-enable MD013 -->
 
 The repository contains **source assets**. Runtime state, credentials, session
 history and target-specific MCP configuration live outside the repository in
@@ -54,7 +66,8 @@ Runtime state:
 - a Docker build of `image/pi.Dockerfile`, followed by a `pi --version`
   smoke test.
 
-Lint rules live in `.hadolint.yaml` and `.yamllint.yml`.
+Lint rules live in `.hadolint.yaml`, `.yamllint.yml` and
+`.markdownlint-cli2.yaml`.
 
 ## Install
 

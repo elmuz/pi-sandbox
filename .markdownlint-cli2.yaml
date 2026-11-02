@@ -1,0 +1,11 @@
+---
+# The README header uses centered HTML for the logo, title, summary and badges.
+config:
+  MD033:
+    allowed_elements:
+      - a
+      - em
+      - h1
+      - img
+      - p
+  MD041: false
