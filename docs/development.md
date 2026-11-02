@@ -18,6 +18,7 @@ pi-sandbox/
 ├── examples/mcp/catafalco/        optional target config templates
 ├── scripts/mcp-selftest.sh        contract checks without an MCP stack
 ├── install.sh                     creates state dirs and symlinks the launcher
+├── LICENSE                        MIT license
 └── README.md
 ```
 

@@ -13,6 +13,7 @@
   <a href="https://github.com/hadolint/hadolint"><img src="https://img.shields.io/badge/hadolint-passing-brightgreen.svg" alt="Hadolint"></a>
   <a href="https://yamllint.readthedocs.io/"><img src="https://img.shields.io/badge/yamllint-passing-brightgreen.svg" alt="yamllint"></a>
   <a href="https://github.com/DavidAnson/markdownlint"><img src="https://img.shields.io/badge/markdownlint-passing-brightgreen.svg" alt="markdownlint"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 <!-- markdownlint-enable MD013 -->
 
@@ -72,3 +73,7 @@ The [documentation index](docs/index.md) links to every guide.
 | [Security](docs/security.md) | Container model, mounts, credentials, Git and GPG |
 | [MCP integration](docs/mcp.md) | server-mcp contract, tokens, Compose and troubleshooting |
 | [Development](docs/development.md) | Repository layout, CI, lint rules and self-tests |
+
+## License
+
+Released under the [MIT License](LICENSE).
