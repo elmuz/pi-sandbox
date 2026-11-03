@@ -33,10 +33,13 @@ unless `PI_SANDBOX_STATE` overrides it.
 - Project-only workspace mount, plus a disposable scratch mode for `$HOME` or
   `/`.
 - Rootless Podman with `userns=keep-id`, a read-only root filesystem,
-  `cap-drop=ALL`, `no-new-privileges` and resource limits.
-- Shared Pi auth, sessions and global config without mounting host secrets.
-- Optional GitHub CLI access, Git identity and OpenPGP signing through the
-  host `gpg-agent`.
+  `cap-drop=ALL`, `no-new-privileges`, CPU/memory/PID/file-descriptor limits.
+- No direct internet or LAN route. A shared egress proxy allows public
+  destinations, blocks private ranges, and supports host-owned allow/deny rules.
+- Per-project sessions and state, with per-session auth seeded read-only from
+  the host and discarded on exit.
+- Optional GitHub CLI access, Git identity and opt-in OpenPGP signing through
+  the host `gpg-agent`.
 - Wayland clipboard access for pasting images into Pi.
 - Optional MCP client access to server-mcp over an internal network.
 
@@ -60,7 +63,23 @@ install -m 0600 ~/.pi/agent/auth.json \
   "$HOME/.local/share/pi-sandbox/auth/auth.json"
 ```
 
-Rebuild the image after a Pi update with `pi-sandbox --update`.
+The container copies that file into a per-session tmpfs. Login and refresh
+writes are discarded on exit, so the host file is never modified.
+
+Configure egress and optional signing in `~/.config/pi-sandbox/`:
+
+```bash
+# Allow a private self-hosted resource, or deny a public MCP target.
+$EDITOR ~/.config/pi-sandbox/egress-policy.conf
+
+# Enable host GPG forwarding once, instead of passing --gpg-sign every time.
+printf 'PI_SANDBOX_GPG_SIGN=1\n' >> ~/.config/pi-sandbox/config
+
+pi-sandbox --start-egress
+pi-sandbox --egress-status
+```
+
+Rebuild both images after a Pi update with `pi-sandbox --update`.
 
 ## Documentation
 
@@ -71,6 +90,7 @@ The [documentation index](docs/index.md) links to every guide.
 | [Getting started](docs/getting-started.md) | Install, image build, first run and updates |
 | [Usage](docs/usage.md) | Workspaces, sessions, global config, footer and clipboard |
 | [Security](docs/security.md) | Container model, mounts, credentials, Git and GPG |
+| [Egress](docs/egress.md) | Proxy model, policy syntax, lifecycle and verification |
 | [MCP integration](docs/mcp.md) | server-mcp contract, tokens, Compose and troubleshooting |
 | [Development](docs/development.md) | Repository layout, CI, lint rules and self-tests |
 

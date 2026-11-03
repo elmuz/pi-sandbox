@@ -19,6 +19,9 @@ stop, restart or update the MCP containers.
 - The launcher exports the value as `MCP_TOKEN` and passes `--env MCP_TOKEN`.
   The value is never placed in the podman argv, printed by `--dry-run`, or
   mounted into the container.
+- The sandbox must not reach the MCP target directly. LAN targets are blocked
+  by the egress baseline. Add a public target to the egress deny list so the
+  agent cannot bypass MCP; see [Egress](egress.md).
 
 A project opts in by containing `.pi/mcp.json`. See `examples/mcp.json`.
 
@@ -68,6 +71,7 @@ pi-sandbox --mcp-token-file ~/.config/server-mcp/secrets/http-token
 | Symptom | Likely cause | Check |
 | --- | --- | --- |
 | `401 Unauthorized` | Wrong or rotated token | Compare both token files |
+| `403 Forbidden` | Direct MCP target attempt | Add to egress deny list |
 | DNS failure | Not on control net or MCP down | Check network and target |
 | Permission denied | Token is not mode 0600/0400 | `chmod 600` the token |
 | Missing token | No sandbox token copy | Run the printed `install` |
@@ -82,6 +86,11 @@ A Pi process running directly on the host is not on `pi-control` and cannot
 reach these endpoints. Use stdio transport for a host-run Pi, or explicitly
 publish a loopback-only port in the MCP deployment. The sandbox never publishes
 a host port by default.
+
+Inside the sandbox, `mcp-remote` and `mcp-disk` are in the default
+`NO_PROXY` list, so MCP calls stay on `pi-control` instead of going through the
+egress proxy. If you use different MCP hostnames, add them to
+`PI_SANDBOX_NO_PROXY` in the launcher config.
 
 ## MCP services
 

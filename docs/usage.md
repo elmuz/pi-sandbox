@@ -60,6 +60,18 @@ directory is therefore shown as `/workspace`. The built-in footer is not
 replaced, and host Pi never loads that extension, so the marker appears only in
 a `pi-sandbox` container.
 
+## Auth
+
+Provider auth is seeded from the read-only host directory:
+
+```text
+$PI_SANDBOX_STATE/auth/
+```
+
+The entrypoint copies regular files into a per-container tmpfs. Writes from
+`/login` or OAuth refresh are discarded when the container exits; the host
+`auth.json` is never modified. See [Security](security.md#credentials).
+
 ## Sessions
 
 Sessions are stored per project:
@@ -105,6 +117,12 @@ APPEND_SYSTEM.md
 ```
 
 `fd` is installed in the image, so Pi does not need to download it per project.
+
+## Network
+
+The sandbox has no direct internet or LAN route. It sends HTTP(S) traffic to
+the internal egress proxy. Configure allow/deny rules and inspect the proxy in
+[Egress](egress.md).
 
 ## Clipboard images
 
