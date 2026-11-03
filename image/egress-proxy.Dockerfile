@@ -15,7 +15,5 @@ RUN chmod 0755 /usr/local/bin/pi-egress-proxy
 
 USER 1000:1000
 EXPOSE 3128
-HEALTHCHECK --interval=10s --timeout=3s --start-period=2s --retries=3 \
-    CMD ["python3", "-c", "import socket; s=socket.create_connection(('127.0.0.1',3128),2); s.close()"]
 
 ENTRYPOINT ["python3", "/usr/local/bin/pi-egress-proxy"]
