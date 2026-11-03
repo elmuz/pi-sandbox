@@ -15,6 +15,7 @@
 #   pi-sandbox --mcp-token-file PATH
 #   pi-sandbox --no-mcp
 #   pi-sandbox --update
+#   pi-sandbox --gpg-sign
 #   pi-sandbox --start-egress
 #   pi-sandbox --stop-egress
 #   pi-sandbox --egress-status
@@ -66,6 +67,7 @@ EGRESS_POLICY="${PI_SANDBOX_EGRESS_POLICY:-$CONFIG_DIR/egress-policy.conf}"
 EGRESS_PROXY_BASE_IMAGE="${PI_EGRESS_PROXY_BASE_IMAGE:-python:3.12-slim}"
 NO_PROXY_DEFAULT="localhost,127.0.0.1,::1,$MCP_NETWORK,mcp-remote,mcp-disk"
 NO_PROXY_VALUE="${PI_SANDBOX_NO_PROXY:-$NO_PROXY_DEFAULT}"
+GPG_SIGN="${PI_SANDBOX_GPG_SIGN:-0}"
 
 # Match the server-mcp token-file rule: regular, non-empty, one line, and
 # readable by the owner only. The value is kept in a variable, never in argv.
@@ -271,6 +273,7 @@ stop_egress=0
 restart_egress=0
 egress_status=0
 check_egress_policy=0
+gpg_sign="$GPG_SIGN"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -308,6 +311,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --check-egress-policy)
       check_egress_policy=1
+      shift
+      ;;
+    --gpg-sign)
+      gpg_sign=1
+      shift
+      ;;
+    --no-gpg-sign)
+      gpg_sign=0
       shift
       ;;
     --mcp-token-file)
@@ -556,15 +567,16 @@ if [[ -n "$git_email" ]]; then
   envs+=(--env "GIT_AUTHOR_EMAIL=$git_email" --env "GIT_COMMITTER_EMAIL=$git_email")
 fi
 
-# Forward the host gpg-agent extra socket for commit and tag signing. Only
-# public key material is copied into the container: private keys stay on the
-# host, and the extra socket cannot export them. Set gpg.format=ssh on the host
-# to opt out; SSH signing is not forwarded by this launcher.
+# Forward the host gpg-agent extra socket for commit and tag signing only when
+# explicitly enabled with --gpg-sign or PI_SANDBOX_GPG_SIGN=1. Only public key
+# material is copied into the container: private keys stay on the host, and the
+# extra socket cannot export them. SSH signing is not forwarded by this launcher.
 gpg_format="$(git config --global --get gpg.format 2>/dev/null || true)"
 signing_key="$(git config --global --get user.signingkey 2>/dev/null || true)"
 commit_gpgsign="$(git config --global --get commit.gpgsign 2>/dev/null || true)"
 tag_gpgsign="$(git config --global --get tag.gpgsign 2>/dev/null || true)"
-if [[ "${gpg_format:-openpgp}" == "openpgp" ]] \
+if [[ "$gpg_sign" == "1" ]] \
+  && [[ "${gpg_format:-openpgp}" == "openpgp" ]] \
   && [[ -n "$signing_key" || "$commit_gpgsign" == "true" || "$tag_gpgsign" == "true" ]] \
   && command -v gpgconf >/dev/null 2>&1; then
   host_gpg_home="$(gpgconf --list-dirs homedir 2>/dev/null || true)"
