@@ -629,10 +629,15 @@ for dir in prompts skills themes extensions; do
   fi
 done
 
-# Credentials are shared across Pi instances, but deliberately kept outside
-# the project state and workspace. Create this directory once, then copy
-# auth.json into it if you want a single /login for all containers.
-mounts+=(--mount "type=bind,src=$STATE_DIR/auth,dst=/shared-auth")
+# Credentials are seeded from a read-only host directory into a per-container
+# tmpfs. Login and OAuth refreshes never write back to the host file, so a
+# compromised sandbox cannot poison future sessions. Create the host auth
+# directory once and copy auth.json into it if you want a single /login for all
+# containers.
+mounts+=(
+  --mount "type=bind,src=$STATE_DIR/auth,dst=/auth-seed,ro"
+  --tmpfs "/shared-auth:rw,nosuid,nodev,size=1m,mode=1777"
+)
 
 # Optional GitHub CLI token. It is a capability: any Pi container with this
 # environment variable can use GitHub as that token. Prefer a fine-grained PAT.

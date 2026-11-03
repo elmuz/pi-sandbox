@@ -21,8 +21,15 @@ if [ -d /global-pi ]; then
   done
 fi
 
-# Shared credentials live outside the per-project state volume. Symlinking
-# means /login and OAuth refresh write through to the shared files.
+# Host credentials are mounted read-only at /auth-seed. Copy them into the
+# writable per-container tmpfs at /shared-auth. The host files are never
+# modified; /login and OAuth refreshes are discarded when the container exits.
+if [ -d /auth-seed ]; then
+  mkdir -p /shared-auth
+  find /auth-seed -mindepth 1 -maxdepth 1 -type f \
+    -exec cp -f {} /shared-auth/ \;
+fi
+
 if [ -d /shared-auth ]; then
   ln -sfn /shared-auth/auth.json "$state/auth.json"
   ln -sfn /shared-auth/mcp-auth.json "$state/mcp-auth.json"
