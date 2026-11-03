@@ -88,6 +88,28 @@ pi-sandbox --continue
 
 Do not open the same session concurrently from two Pi instances.
 
+## Container lifecycle
+
+The container is disposable and removed when the session ends. The launcher
+installs traps for `SIGHUP`, `SIGINT` and `SIGTERM`, so closing the terminal
+window also removes the container instead of leaving it running in the
+background. A detached watchdog repeats the cleanup if the launcher is killed
+without running its traps, which covers `SIGKILL` and terminal emulators that
+do not forward the hangup.
+
+Each container is labelled with the launcher PID and process start time; the
+next launch also removes any stopped container, or running container whose
+launcher no longer exists, that carries the `pi-sandbox.project` label. The
+watchdog usually removes leftovers immediately; the startup sweep is the final
+fallback.
+
+If you ever need to inspect or remove a leftover session manually:
+
+```bash
+podman ps -a --filter label=pi-sandbox.project
+podman rm -f <name>
+```
+
 ## Global config
 
 Shared read-only from `~/.pi/agent`:

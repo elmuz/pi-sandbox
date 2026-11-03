@@ -89,6 +89,8 @@ for needle in \
   "--network $EGRESS_NETWORK" \
   'HTTP_PROXY=http://pi-egress-proxy-isolation-' \
   'HTTPS_PROXY=http://pi-egress-proxy-isolation-' \
+  '--label pi-sandbox.launcher-pid=' \
+  '--label pi-sandbox.launcher-start=' \
   "src=$TEST_STATE/auth" \
   "dst=/auth-seed" \
   '--tmpfs /shared-auth:'; do

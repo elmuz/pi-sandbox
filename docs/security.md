@@ -4,7 +4,8 @@
 
 It runs rootless Podman with:
 
-- `--rm`
+- `--rm`, plus launcher traps and a labelled stale-container sweep, so a closed
+  terminal or a killed launcher does not leave the sandbox running
 - non-root UID/GID
 - `userns=keep-id`
 - read-only root filesystem

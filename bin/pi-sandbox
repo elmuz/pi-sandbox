@@ -72,6 +72,14 @@ CPUS="${PI_SANDBOX_CPUS:-2}"
 NOFILE="${PI_SANDBOX_NOFILE:-8192}"
 SECRET_SCAN="${PI_SANDBOX_SECRET_SCAN:-1}"
 
+# Identity of this launcher process. Container names already embed $$; the
+# start time disambiguates a recycled PID when sweeping stale containers.
+launcher_pid="$$"
+launcher_start="$(awk '{print $22}' "/proc/$launcher_pid/stat" 2>/dev/null || true)"
+container_name=""
+container_started=0
+podman_pid=""
+
 # Match the server-mcp token-file rule: regular, non-empty, one line, and
 # readable by the owner only. The value is kept in a variable, never in argv.
 validate_mcp_token_file() {
@@ -256,6 +264,93 @@ print_egress_status() {
   printf 'proxy container: %s (running=%s)\n' "$EGRESS_PROXY_NAME" "$running"
   printf 'policy:         %s\n' "$EGRESS_POLICY"
   printf 'no_proxy:       %s\n' "$NO_PROXY_VALUE"
+}
+
+# Detached supervisor for the case where the launcher is killed without a
+# chance to run its traps (for example SIGKILL or a terminal emulator that does
+# not forward the hangup). It lives in its own session, so closing the terminal
+# does not affect it. It polls the launcher identity, then removes the
+# container and the scratch workspace.
+start_cleanup_watchdog() {
+  local script=""
+
+  command -v setsid >/dev/null 2>&1 || return 0
+
+  script="$(cat <<'WATCHDOG'
+launcher_pid="$1"
+launcher_start="$2"
+container_name="$3"
+scratch_dir="$4"
+
+while kill -0 "$launcher_pid" 2>/dev/null; do
+  current="$(awk '{print $22}' "/proc/$launcher_pid/stat" 2>/dev/null || true)"
+  [[ "$current" == "$launcher_start" ]] || break
+  sleep 1
+done
+
+# A podman client that outlives the launcher may still be creating the
+# container, so retry instead of racing it with a single remove. Only touch a
+# container whose launcher-start label belongs to this launcher: the name could
+# be reused by a later process that received the same PID.
+sleep 1
+for _ in 1 2 3; do
+  current_start="$(podman container inspect \
+    --format '{{index .Config.Labels "pi-sandbox.launcher-start"}}' \
+    "$container_name" 2>/dev/null || true)"
+
+  if [[ -n "$current_start" && "$current_start" != "$launcher_start" ]]; then
+    break
+  fi
+
+  if [[ "$current_start" == "$launcher_start" ]]; then
+    podman rm -f --ignore "$container_name" >/dev/null 2>&1 || true
+  fi
+
+  sleep 1
+done
+
+[[ -n "$scratch_dir" ]] && rm -rf -- "$scratch_dir"
+WATCHDOG
+)"
+
+  setsid bash -c "$script" pi-sandbox-watchdog \
+    "$launcher_pid" "$launcher_start" "$container_name" "$scratch_workspace_dir" \
+    </dev/null >/dev/null 2>&1 &
+}
+
+# Remove containers left behind when a launcher died without running its EXIT
+# trap (for example SIGKILL or a terminal emulator that closes too abruptly).
+# A container whose launcher PID and start time still match is a live session;
+# stopped containers and containers with a dead launcher are safe to remove.
+remove_stale_containers() {
+  local id="" status="" pid="" start="" current=""
+
+  while IFS=$'\t' read -r id status pid start; do
+    [[ -n "$id" ]] || continue
+
+    if [[ -n "$pid" && -n "$start" ]]; then
+      current="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)"
+      if [[ -n "$current" && "$current" == "$start" ]]; then
+        # Launcher is alive: it may still be creating this container.
+        continue
+      fi
+
+      podman rm -f "$id" >/dev/null 2>&1 || true
+      continue
+    fi
+
+    # Running container from a launcher that predates these labels: leave it.
+    if [[ "$status" == Up* ]]; then
+      continue
+    fi
+
+    podman rm -f "$id" >/dev/null 2>&1 || true
+  done < <(
+    podman ps -a \
+      --filter "label=pi-sandbox.project" \
+      --format '{{.ID}}\t{{.Status}}\t{{.Label "pi-sandbox.launcher-pid"}}\t{{.Label "pi-sandbox.launcher-start"}}' \
+      2>/dev/null || true
+  )
 }
 
 warn_workspace_secrets() {
@@ -448,14 +543,28 @@ if [[ "$workspace" == "/" || "$workspace" == "$home_dir" ]]; then
   echo "Using temporary workspace $workspace" >&2
 fi
 
-if [[ -n "$scratch_workspace_dir" ]]; then
-  cleanup_scratch() {
+cleanup() {
+  # Stop the background podman client first. Otherwise it could still create
+  # the container after the remove below, leaving a fresh dangling one.
+  if [[ -n "$podman_pid" ]] && kill -0 "$podman_pid" 2>/dev/null; then
+    kill -TERM "$podman_pid" 2>/dev/null || true
+    wait "$podman_pid" 2>/dev/null || true
+  fi
+
+  if [[ "$container_started" -eq 1 && -n "$container_name" ]]; then
+    podman rm -f --ignore "$container_name" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -n "$scratch_workspace_dir" ]]; then
     rm -rf -- "$scratch_workspace_dir"
-  }
-  trap cleanup_scratch EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
-fi
+  fi
+}
+trap cleanup EXIT
+# Run podman in the background below: bash only executes these traps while it
+# is waiting, and closing a terminal sends SIGHUP to the whole process group.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 case "$workspace" in
   /|"$home_dir/.ssh"|"$home_dir/.pi"|"$STATE_DIR")
@@ -492,6 +601,8 @@ if [[ "$workspace" == "$HOME"/* && "$workspace" != "/workspace" ]]; then
   container_workspace="$workspace"
   mirror_mounts+=(--mount "type=bind,src=$workspace,dst=$workspace")
 fi
+
+container_name="pi-${project_name}-$$"
 
 mkdir -p "$session_dir" "$STATE_DIR/auth" "$STATE_DIR/secrets"
 chmod 700 "$STATE_DIR/auth" "$STATE_DIR/secrets" "$session_dir"
@@ -533,6 +644,7 @@ fi
 # with a public uplink. The MCP network stays internal and is only needed when
 # the project opts in.
 if [[ "$dry_run" -eq 0 ]]; then
+  remove_stale_containers
   ensure_egress
 
   if [[ "$mcp_enabled" -eq 1 ]]; then
@@ -707,8 +819,10 @@ fi
 
 run_cmd=(
   podman run --rm -it \
-    --name "pi-${project_name}-$$" \
+    --name "$container_name" \
     --label "pi-sandbox.project=$project_name" \
+    --label "pi-sandbox.launcher-pid=$launcher_pid" \
+    --label "pi-sandbox.launcher-start=$launcher_start" \
     --userns=keep-id \
     --user "$(id -u):$(id -g)" \
     --init \
@@ -741,4 +855,14 @@ if [[ "$dry_run" -eq 1 ]]; then
   exit 0
 fi
 
-"${run_cmd[@]}"
+start_cleanup_watchdog
+
+# Keep podman in the background so the traps above run as soon as the
+# terminal hangs up; a foreground `podman run` defers them until it exits.
+container_started=1
+# The explicit stdin redirection overrides bash's /dev/null for async commands.
+"${run_cmd[@]}" <&0 &
+podman_pid=$!
+status=0
+wait "$podman_pid" || status=$?
+exit "$status"
