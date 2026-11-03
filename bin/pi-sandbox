@@ -68,6 +68,9 @@ EGRESS_PROXY_BASE_IMAGE="${PI_EGRESS_PROXY_BASE_IMAGE:-python:3.12-slim}"
 NO_PROXY_DEFAULT="localhost,127.0.0.1,::1,$MCP_NETWORK,mcp-remote,mcp-disk"
 NO_PROXY_VALUE="${PI_SANDBOX_NO_PROXY:-$NO_PROXY_DEFAULT}"
 GPG_SIGN="${PI_SANDBOX_GPG_SIGN:-0}"
+CPUS="${PI_SANDBOX_CPUS:-2}"
+NOFILE="${PI_SANDBOX_NOFILE:-8192}"
+SECRET_SCAN="${PI_SANDBOX_SECRET_SCAN:-1}"
 
 # Match the server-mcp token-file rule: regular, non-empty, one line, and
 # readable by the owner only. The value is kept in a variable, never in argv.
@@ -255,6 +258,27 @@ print_egress_status() {
   printf 'no_proxy:       %s\n' "$NO_PROXY_VALUE"
 }
 
+warn_workspace_secrets() {
+  local -a found=()
+
+  [[ "$SECRET_SCAN" == "1" ]] || return 0
+  mapfile -t found < <(
+    find "$workspace" -maxdepth 6 \
+      \( -name .git -o -name node_modules -o -name .venv -o -name vendor -o -name target \) -prune -o \
+      \( -type d -name .vaults -o -type f \
+         \( -name .env -o -name '.env.*' -o -name '*.vault_pass' -o -name id_rsa \
+            -o -name id_ed25519 -o -name id_ecdsa -o -name '*.pem' -o -name '*.key' \
+            -o -name .netrc \) \) -print 2>/dev/null | head -n 20
+  )
+
+  if [[ "${#found[@]}" -gt 0 ]]; then
+    echo "Warning: workspace contains files that look like secrets:" >&2
+    printf '  %s\n' "${found[@]}" >&2
+    echo "The workspace is mounted read-write. Move or remove these files if they should not be visible to Pi." >&2
+    echo "Set PI_SANDBOX_SECRET_SCAN=0 to silence this warning." >&2
+  fi
+}
+
 host_pi_version="$(pi --version 2>/dev/null | head -n 1 | tr -d '[:space:]' || true)"
 PI_VERSION="${PI_VERSION:-${host_pi_version:-1.4.0}}"
 PI_IMAGE="${PI_IMAGE:-localhost/pi-sandbox:${PI_VERSION}}"
@@ -334,6 +358,15 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if ! [[ "$CPUS" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "PI_SANDBOX_CPUS must be a number, for example 2 or 0.5: $CPUS" >&2
+  exit 2
+fi
+if ! [[ "$NOFILE" =~ ^[0-9]+$ ]]; then
+  echo "PI_SANDBOX_NOFILE must be an integer, for example 8192: $NOFILE" >&2
+  exit 2
+fi
 
 # Rebuilding the image does not need a workspace and must work from anywhere.
 if [[ "$update_image" -eq 1 ]]; then
@@ -430,6 +463,8 @@ case "$workspace" in
     exit 2
     ;;
 esac
+
+warn_workspace_secrets
 
 if [[ -n "$scratch_workspace_dir" ]]; then
   project_name="scratch"
@@ -682,6 +717,8 @@ run_cmd=(
     --security-opt=no-new-privileges \
     --pids-limit=512 \
     --memory=4g \
+    --cpus="$CPUS" \
+    --ulimit "nofile=${NOFILE}:${NOFILE}" \
     --workdir "$container_workspace" \
     --mount "type=volume,src=$home_volume,dst=/home/$USER" \
     --mount "type=bind,src=$workspace,dst=/workspace" \
