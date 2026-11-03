@@ -43,6 +43,13 @@ unless `PI_SANDBOX_STATE` overrides it.
 - Wayland clipboard access for pasting images into Pi.
 - Optional MCP client access to server-mcp over an internal network.
 
+<p align="center">
+  <img src="assets/footer.png" width="760" alt="Sandbox footer marker">
+</p>
+
+<p align="center"><em>The container-only footer row marks the sandbox and
+shows the current project.</em></p>
+
 ## Quick start
 
 Requires rootless Podman and a host Pi installation.
