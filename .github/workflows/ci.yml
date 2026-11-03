@@ -32,10 +32,20 @@ jobs:
       - name: Run MCP contract self-test
         run: scripts/mcp-selftest.sh
 
-      - name: Lint Dockerfile
+      - name: Run isolation self-test
+        run: scripts/isolation-test.sh
+
+      - name: Lint Pi Dockerfile
         uses: hadolint/hadolint-action@v3.5.0
         with:
           dockerfile: image/pi.Dockerfile
+          config: .hadolint.yaml
+          failure-threshold: warning
+
+      - name: Lint egress proxy Dockerfile
+        uses: hadolint/hadolint-action@v3.5.0
+        with:
+          dockerfile: image/egress-proxy.Dockerfile
           config: .hadolint.yaml
           failure-threshold: warning
 
@@ -79,3 +89,26 @@ jobs:
 
       - name: Smoke-test image
         run: docker run --rm localhost/pi-sandbox:ci pi --version
+
+  proxy:
+    name: Build egress proxy
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build proxy image
+        run: |
+          docker build \
+            -f image/egress-proxy.Dockerfile \
+            -t localhost/pi-sandbox-egress:ci \
+            image
+
+      - name: Smoke-test proxy policy
+        run: |
+          docker run --rm \
+            --mount "type=bind,src=$PWD/examples/egress-policy.example.conf,dst=/etc/pi-egress/policy.conf,ro" \
+            localhost/pi-sandbox-egress:ci \
+            --check-policy \
+            --policy /etc/pi-egress/policy.conf
