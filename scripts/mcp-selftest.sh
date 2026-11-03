@@ -2,7 +2,7 @@
 #
 # Self-test the pi-sandbox <-> server-mcp contract without an MCP stack.
 #
-# The first four checks only use --dry-run. The last check uses a fake podman
+# The dry-run checks need no MCP stack. The last check uses a fake podman
 # executable to verify that the internal control network is created once and
 # that the token never appears in the podman argv.
 
@@ -57,6 +57,12 @@ write_project_config() {
   printf '{"mcpServers":{}}\n' > "$TEST_PROJECT/.pi/mcp.json"
 }
 
+write_sandbox_config() {
+  mkdir -p "$TEST_PROJECT/.pi"
+  printf '{"mcpServers":{"sandbox":{"url":"http://sandbox:8000/mcp"}}}\n' \
+    > "$TEST_PROJECT/.pi/mcp.sandbox.json"
+}
+
 write_token() {
   mkdir -p "$TEST_STATE/secrets"
   printf '%s\n' "$SECRET" > "$TEST_TOKEN"
@@ -80,6 +86,22 @@ grep -Fq -- "$SECRET" "$stdout" "$stderr" \
 control_count="$(grep -o -- "--network $TEST_NETWORK" "$stdout" | wc -l)"
 [[ "$control_count" -eq 1 ]] || fail "dry-run has $control_count control network flags, expected 1"
 pass "valid token: one internal network and redacted MCP_TOKEN"
+
+# 1b. A sandbox-specific config wins and is mounted over .pi/mcp.json inside
+# the container, so the host file can stay a host-run development config.
+write_sandbox_config
+stdout="$TMP_ROOT/stdout.1b"
+stderr="$TMP_ROOT/stderr.1b"
+run_launcher --dry-run > "$stdout" 2> "$stderr" \
+  || fail "sandbox-config dry-run exited non-zero"
+
+grep -Fq -- "src=$TEST_PROJECT/.pi/mcp.sandbox.json" "$stdout" \
+  || fail "dry-run does not mount the sandbox MCP config"
+grep -Fq -- 'dst=/workspace/.pi/mcp.json' "$stdout" \
+  || fail "sandbox MCP config is not mounted over .pi/mcp.json"
+grep -Fq -- "--network $TEST_NETWORK" "$stdout" \
+  || fail "sandbox-config dry-run is missing the control network"
+pass "sandbox MCP config is overlaid on .pi/mcp.json"
 
 # 2. A group/other-readable token is refused.
 chmod 644 "$TEST_TOKEN"
@@ -107,7 +129,7 @@ grep -Fq 'install -m 600' "$stderr" \
   || fail "missing token error does not include the fix command"
 pass "missing token fails closed with a fix command"
 
-# 4. A project without .pi/mcp.json gets neither the control network nor a token.
+# 4. A project without an MCP config gets neither the control network nor a token.
 rm -rf "$TEST_PROJECT/.pi"
 stdout="$TMP_ROOT/stdout.4"
 stderr="$TMP_ROOT/stderr.4"

@@ -23,16 +23,49 @@ stop, restart or update the MCP containers.
   by the egress baseline. Add a public target to the egress deny list so the
   agent cannot bypass MCP; see [Egress](egress.md).
 
-A project opts in by containing `.pi/mcp.json`. See `examples/mcp.json`.
+A project opts in by containing `.pi/mcp.json` or `.pi/mcp.sandbox.json`. See
+`examples/mcp.json`.
 
 For an opted-in project, the launcher creates the control network with
 `--internal` if it does not exist. If the network exists but no MCP container is
 attached, it prints a hint and continues; start the server-mcp stack separately
 with systemd.
 
+## Host and sandbox configs
+
+A repository that is also developed directly on the host needs two different
+MCP configurations:
+
+- `.pi/mcp.json` is what a host-run `pi` reads. Use it for stdio development
+  servers or for loopback HTTP endpoints.
+- `.pi/mcp.sandbox.json` is the container configuration: internal hostnames,
+  `MCP_TOKEN` and no host ports.
+
+When `.pi/mcp.sandbox.json` exists, the launcher uses it for the MCP contract
+and mounts it read-only over the project's `.pi/mcp.json` inside the container.
+The host file is not modified, and the sandbox never sees the host development
+entry points. If the sandbox file is absent, the launcher keeps the previous
+behaviour and uses `.pi/mcp.json` directly.
+
+The overlay keeps one project checkout usable in both modes:
+
+```text
+host pi  -> .pi/mcp.json          -> stdio or loopback dev servers
+sandbox  -> .pi/mcp.sandbox.json  -> mcp-remote / mcp-disk on pi-control
+```
+
+Because the overlay is read-only, changes made from `/mcp` inside the sandbox
+are not written back. Edit `.pi/mcp.sandbox.json` on the host and relaunch.
+
+This overlay is a convenience, not a security boundary. The agent has a shell
+and the MCP token, so it can call the MCP server directly or run a nested Pi with
+its own configuration. The shared workspace has a wider limitation: files the
+agent writes can later be executed by a host-side `pi`, test, build or deploy
+process. See [Shared workspace limitation](security.md#shared-workspace-limitation).
+
 ## Missing token
 
-If a project has `.pi/mcp.json` but the token is missing, the launcher exits 2
+If a project has an MCP config but the token is missing, the launcher exits 2
 before `podman run` and prints the fix command:
 
 ```bash
@@ -54,7 +87,7 @@ pi-sandbox --no-mcp
 ```
 
 `PI_SANDBOX_ALLOW_NO_MCP_TOKEN=1` is a diagnostic escape hatch for launching
-with `.pi/mcp.json` but no token. It is not intended for normal use.
+with an MCP config but no token. It is not intended for normal use.
 
 ## Rotating the token
 

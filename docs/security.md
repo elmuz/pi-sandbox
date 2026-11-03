@@ -79,6 +79,33 @@ such as `.env`, `.vaults`, `*.vault_pass`, `id_*`, `*.pem`, `*.key` and
 `.netrc`. It prints a warning because the workspace is mounted read-write. The
 scan is advisory; set `PI_SANDBOX_SECRET_SCAN=0` to disable it.
 
+## Shared workspace limitation
+
+The workspace is mounted read-write, which is required for coding. That also
+means an untrusted agent can plant files that the host later executes:
+
+- `.pi/mcp.json`, which host-run Pi uses for stdio MCP commands;
+- `.pi/extensions`, `.pi/settings.json` and `AGENTS.md`;
+- `.git/hooks` and other git configuration;
+- test, build, lint and deployment scripts such as `conftest.py`,
+  `pyproject.toml`, `.pre-commit-config.yaml` and `scripts/`.
+
+The container protects the host from direct access *during the session*. It does
+not protect a host-side process that later reads or executes the same checkout.
+Do not run host `pi`, tests, build, deploy or `pre-commit` in a workspace that an
+untrusted sandbox has written to without reviewing it first. Ignored files are
+part of the risk: `.pi/`, `.env` and `.git/hooks` do not appear in a normal
+`git diff`.
+
+Until the launcher isolates the sandbox workspace, use a separate clone for
+sandbox sessions and keep the host development checkout on a different path.
+
+This limitation also applies to MCP configuration. The sandbox MCP config
+overlay in [MCP integration](mcp.md) prevents a trivial file swap, but it is not
+a security boundary. The agent has a shell and the MCP token, so it can call the
+MCP server directly or run a nested Pi with its own config. The MCP server's own
+policy is the enforcement point.
+
 ## Credentials
 
 The shared auth directory is:

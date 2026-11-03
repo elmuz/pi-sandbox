@@ -1,13 +1,17 @@
-# Example project-level MCP configuration for the server-mcp deployment.
+# Example sandbox MCP configuration for the server-mcp deployment.
 #
-# Only projects that contain .pi/mcp.json get the internal pi-control network
-# and the MCP_TOKEN environment variable.
+# Save this as .pi/mcp.sandbox.json in a project that is also developed with a
+# host-run Pi. The launcher mounts it read-only over .pi/mcp.json inside the
+# container, so the host file can keep its own stdio/loopback entries.
+#
+# Projects that contain .pi/mcp.json or .pi/mcp.sandbox.json get the internal
+# pi-control network and the MCP_TOKEN environment variable.
 #
 # The MCP services publish no host port. They are reachable by their Podman DNS
 # names on pi-control: mcp-remote and mcp-disk, both on port 8000 at /mcp.
 #
 # The token is read by the launcher from:
-#   $PI_SANDBOX_STATE/secrets/mcp_token
+#   $PI_SANDBOX_MCP_TOKEN_FILE or $PI_SANDBOX_STATE/secrets/mcp_token
 #
 # It must be a single-line file with mode 0600 or 0400. The launcher exports it
 # as MCP_TOKEN and never places the value in the podman argv.

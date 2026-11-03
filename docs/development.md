@@ -19,7 +19,7 @@ pi-sandbox/
 ├── compose/compose.yaml           optional MCP Compose scaffold
 ├── examples/config.example        launcher config template
 ├── examples/egress-policy.example.conf
-├── examples/mcp.json              project-level Pi MCP client example
+├── examples/mcp.json              sandbox project MCP config example
 ├── examples/mcp/catafalco/        optional target config templates
 ├── scripts/isolation-test.sh      static and live isolation checks
 ├── scripts/mcp-selftest.sh        contract checks without an MCP stack

@@ -30,7 +30,10 @@
 # Its Pi state and sessions use the stable name "scratch".
 #
 # The MCP control network is attached only when the project has
-# .pi/mcp.json. The shared MCP bearer token is read from
+# .pi/mcp.json or the sandbox-specific .pi/mcp.sandbox.json. The latter is
+# mounted over .pi/mcp.json inside the container, so the host can use
+# .pi/mcp.json for a host-run Pi without weakening the sandbox. The shared MCP
+# bearer token is read from
 # $PI_SANDBOX_STATE/secrets/mcp_token when that file exists, validated against
 # the server-mcp token rules, and passed to the container as MCP_TOKEN through
 # the environment. The token value never appears in the podman argv or in
@@ -58,6 +61,7 @@ STATE_DIR="${PI_SANDBOX_STATE:-${XDG_DATA_HOME:-$HOME/.local/share}/pi-sandbox}"
 MCP_NETWORK="${PI_SANDBOX_MCP_NETWORK:-pi-control}"
 MCP_TOKEN_FILE="${PI_SANDBOX_MCP_TOKEN_FILE:-$STATE_DIR/secrets/mcp_token}"
 MCP_PROJECT_CONFIG=".pi/mcp.json"
+MCP_SANDBOX_CONFIG=".pi/mcp.sandbox.json"
 MCP_TOKEN_VALUE=""
 MCP_TOKEN_AVAILABLE=0
 EGRESS_NETWORK="${PI_SANDBOX_EGRESS_NETWORK:-pi-egress}"
@@ -608,12 +612,19 @@ mkdir -p "$session_dir" "$STATE_DIR/auth" "$STATE_DIR/secrets"
 chmod 700 "$STATE_DIR/auth" "$STATE_DIR/secrets" "$session_dir"
 
 # Resolve the MCP contract before any podman command. A project opts in with
-# .pi/mcp.json; --no-mcp skips the contract for one launch. If a token exists it
-# is validated even when this project does not use MCP, so a bad global token
-# cannot silently reach a later launch.
+# .pi/mcp.sandbox.json (preferred) or .pi/mcp.json. --no-mcp skips the contract
+# for one launch. If a token exists it is validated even when this project does
+# not use MCP, so a bad global token cannot silently reach a later launch.
 mcp_enabled=0
-if [[ "$no_mcp" -eq 0 && -f "$workspace/$MCP_PROJECT_CONFIG" ]]; then
-  mcp_enabled=1
+mcp_config_source=""
+if [[ "$no_mcp" -eq 0 ]]; then
+  if [[ -f "$workspace/$MCP_SANDBOX_CONFIG" ]]; then
+    mcp_enabled=1
+    mcp_config_source="$workspace/$MCP_SANDBOX_CONFIG"
+  elif [[ -f "$workspace/$MCP_PROJECT_CONFIG" ]]; then
+    mcp_enabled=1
+    mcp_config_source="$workspace/$MCP_PROJECT_CONFIG"
+  fi
 fi
 
 if [[ "$no_mcp" -eq 0 ]]; then
@@ -629,9 +640,9 @@ fi
 
 if [[ "$mcp_enabled" -eq 1 && "$MCP_TOKEN_AVAILABLE" -eq 0 ]]; then
   if [[ "${PI_SANDBOX_ALLOW_NO_MCP_TOKEN:-0}" == "1" ]]; then
-    echo "Warning: launching with $MCP_PROJECT_CONFIG but no MCP token (PI_SANDBOX_ALLOW_NO_MCP_TOKEN=1)." >&2
+    echo "Warning: launching with $mcp_config_source but no MCP token (PI_SANDBOX_ALLOW_NO_MCP_TOKEN=1)." >&2
   else
-    echo "Missing MCP token for $workspace/$MCP_PROJECT_CONFIG: $MCP_TOKEN_FILE" >&2
+    echo "Missing MCP token for $mcp_config_source: $MCP_TOKEN_FILE" >&2
     echo "Install it with: install -m 600 ~/.config/server-mcp/secrets/http-token \"$MCP_TOKEN_FILE\"" >&2
     echo "Or import it with: pi-sandbox --mcp-token-file ~/.config/server-mcp/secrets/http-token" >&2
     echo "Set PI_SANDBOX_ALLOW_NO_MCP_TOKEN=1 only for diagnostics, or pass --no-mcp to skip MCP." >&2
@@ -803,6 +814,15 @@ mounts+=(
 if [[ -f "$STATE_DIR/secrets/gh_token" ]]; then
   mounts+=(--mount "type=bind,src=$STATE_DIR/secrets/gh_token,dst=/secrets/gh_token,ro")
   envs+=(--env "GH_TOKEN=$(<"$STATE_DIR/secrets/gh_token")")
+fi
+
+# A sandbox-specific MCP file is overlaid on the project's .pi/mcp.json inside
+# the container. The host file can therefore stay a host-run development config.
+# The overlay comes after the workspace mounts so it wins over the bind mount.
+if [[ -n "$mcp_config_source" && "$mcp_config_source" != "$workspace/$MCP_PROJECT_CONFIG" ]]; then
+  mirror_mounts+=(
+    --mount "type=bind,src=$mcp_config_source,dst=$container_workspace/$MCP_PROJECT_CONFIG,ro"
+  )
 fi
 
 # Only projects that declare an MCP server get the control network and token.
