@@ -15,6 +15,14 @@
 #   pi-sandbox --mcp-token-file PATH
 #   pi-sandbox --no-mcp
 #   pi-sandbox --update
+#   pi-sandbox --start-egress
+#   pi-sandbox --stop-egress
+#   pi-sandbox --egress-status
+#
+# The sandbox has no direct internet route. A shared egress proxy container is
+# the only member with a public network; the sandbox joins the internal
+# pi-egress network and uses HTTP(S)_PROXY. The proxy allows public destinations
+# and blocks non-public ones unless the host-owned policy allows them.
 #
 # Starting in $HOME or / uses a temporary empty workspace instead of mounting
 # that directory. The temporary directory is removed when the container exits.
@@ -35,12 +43,29 @@ set -euo pipefail
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 REPO_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 IMAGE_DIR="$REPO_DIR/image"
+CONFIG_DIR="${PI_SANDBOX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/pi-sandbox}"
+CONFIG_FILE="$CONFIG_DIR/config"
+
+# Optional host-owned launcher configuration. It is sourced before defaults,
+# so environment variables and command-line flags can still override it.
+if [[ -f "$CONFIG_FILE" ]]; then
+  # shellcheck source=/dev/null
+  . "$CONFIG_FILE"
+fi
+
 STATE_DIR="${PI_SANDBOX_STATE:-${XDG_DATA_HOME:-$HOME/.local/share}/pi-sandbox}"
 MCP_NETWORK="${PI_SANDBOX_MCP_NETWORK:-pi-control}"
 MCP_TOKEN_FILE="${PI_SANDBOX_MCP_TOKEN_FILE:-$STATE_DIR/secrets/mcp_token}"
 MCP_PROJECT_CONFIG=".pi/mcp.json"
 MCP_TOKEN_VALUE=""
 MCP_TOKEN_AVAILABLE=0
+EGRESS_NETWORK="${PI_SANDBOX_EGRESS_NETWORK:-pi-egress}"
+EGRESS_UPLINK="${PI_SANDBOX_EGRESS_UPLINK:-pi-egress-uplink}"
+EGRESS_PROXY_NAME="${PI_SANDBOX_EGRESS_PROXY_NAME:-pi-egress-proxy}"
+EGRESS_POLICY="${PI_SANDBOX_EGRESS_POLICY:-$CONFIG_DIR/egress-policy.conf}"
+EGRESS_PROXY_BASE_IMAGE="${PI_EGRESS_PROXY_BASE_IMAGE:-python:3.12-slim}"
+NO_PROXY_DEFAULT="localhost,127.0.0.1,::1,$MCP_NETWORK,mcp-remote,mcp-disk"
+NO_PROXY_VALUE="${PI_SANDBOX_NO_PROXY:-$NO_PROXY_DEFAULT}"
 
 # Match the server-mcp token-file rule: regular, non-empty, one line, and
 # readable by the owner only. The value is kept in a variable, never in argv.
@@ -97,9 +122,141 @@ import_mcp_token() {
   fi
 }
 
+ensure_egress_policy() {
+  if [[ -f "$EGRESS_POLICY" ]]; then
+    return
+  fi
+
+  install -d -m 700 "$(dirname "$EGRESS_POLICY")"
+  (
+    umask 077
+    cat > "$EGRESS_POLICY" <<'EOF'
+# pi-sandbox egress policy.
+#
+# The sandbox has no direct internet or LAN route. Public destinations are
+# allowed through the egress proxy; non-public addresses are blocked. Add
+# explicit rules only when you need them:
+#
+#   deny  <hostname|IP|CIDR> [port]   # block a destination
+#   allow <hostname|IP|CIDR> [port]   # permit a private/local destination
+#
+# Explicit deny wins over explicit allow. Hostname rules also match subdomains.
+# Add the MCP target here when it is on a public address, for example:
+#   deny catafalco.example.com
+#   deny 203.0.113.10
+EOF
+  )
+  chmod 600 "$EGRESS_POLICY"
+}
+
+ensure_internal_network() {
+  local name="$1"
+  local internal=""
+
+  if podman network exists "$name" >/dev/null 2>&1; then
+    internal="$(podman network inspect --format '{{.Internal}}' "$name" 2>/dev/null || true)"
+    if [[ "$internal" == "true" ]]; then
+      return
+    fi
+
+    echo "Egress network $name exists but is not internal." >&2
+    echo "Stop the containers attached to it, then remove it once:" >&2
+    echo "  podman ps -a --filter network=$name" >&2
+    echo "  podman network rm $name" >&2
+    echo "The next launch recreates it with --internal." >&2
+    return 1
+  fi
+
+  podman network create --internal "$name" >/dev/null
+}
+
+ensure_egress_networks() {
+  ensure_internal_network "$EGRESS_NETWORK"
+  if ! podman network exists "$EGRESS_UPLINK" >/dev/null 2>&1; then
+    podman network create "$EGRESS_UPLINK" >/dev/null
+  fi
+}
+
+ensure_egress_image() {
+  if podman image exists "$EGRESS_PROXY_IMAGE" >/dev/null 2>&1; then
+    return
+  fi
+
+  echo "Building egress proxy image $EGRESS_PROXY_IMAGE from $EGRESS_PROXY_BASE_IMAGE ..."
+  podman build \
+    --build-arg "BASE_IMAGE=${EGRESS_PROXY_BASE_IMAGE}" \
+    -t "$EGRESS_PROXY_IMAGE" \
+    -f "$IMAGE_DIR/egress-proxy.Dockerfile" \
+    "$IMAGE_DIR"
+}
+
+ensure_egress_proxy() {
+  ensure_egress_policy
+
+  if [[ "$restart_egress" -eq 1 ]]; then
+    podman rm -f "$EGRESS_PROXY_NAME" >/dev/null 2>&1 || true
+  fi
+
+  if podman container exists "$EGRESS_PROXY_NAME" >/dev/null 2>&1; then
+    if [[ "$(podman container inspect --format '{{.State.Running}}' "$EGRESS_PROXY_NAME" 2>/dev/null || true)" != "true" ]]; then
+      podman start "$EGRESS_PROXY_NAME" >/dev/null
+    fi
+    return
+  fi
+
+  podman run -d --rm \
+    --name "$EGRESS_PROXY_NAME" \
+    --hostname "$EGRESS_PROXY_NAME" \
+    --label "pi-sandbox.egress-proxy=1" \
+    --userns=keep-id \
+    --user "$(id -u):$(id -g)" \
+    --read-only \
+    --cap-drop=ALL \
+    --security-opt=no-new-privileges \
+    --pids-limit=128 \
+    --memory=256m \
+    --cpus=1 \
+    --network "$EGRESS_NETWORK" \
+    --network "$EGRESS_UPLINK" \
+    --tmpfs "/tmp:rw,nosuid,nodev,size=16m" \
+    --mount "type=bind,src=$EGRESS_POLICY,dst=/etc/pi-egress/policy.conf,ro" \
+    --env "PYTHONUNBUFFERED=1" \
+    "$EGRESS_PROXY_IMAGE" >/dev/null
+}
+
+ensure_egress() {
+  ensure_egress_networks
+  ensure_egress_image
+  ensure_egress_proxy
+}
+
+print_egress_status() {
+  local internal="unknown"
+  local running="no"
+  local image="missing"
+
+  if podman network exists "$EGRESS_NETWORK" >/dev/null 2>&1; then
+    internal="$(podman network inspect --format '{{.Internal}}' "$EGRESS_NETWORK" 2>/dev/null || true)"
+  fi
+  if podman container exists "$EGRESS_PROXY_NAME" >/dev/null 2>&1; then
+    running="$(podman container inspect --format '{{.State.Running}}' "$EGRESS_PROXY_NAME" 2>/dev/null || echo unknown)"
+  fi
+  if podman image exists "$EGRESS_PROXY_IMAGE" >/dev/null 2>&1; then
+    image="present"
+  fi
+
+  printf 'egress network: %s (internal=%s)\n' "$EGRESS_NETWORK" "${internal:-unknown}"
+  printf 'egress uplink:  %s\n' "$EGRESS_UPLINK"
+  printf 'proxy image:    %s (%s)\n' "$EGRESS_PROXY_IMAGE" "$image"
+  printf 'proxy container: %s (running=%s)\n' "$EGRESS_PROXY_NAME" "$running"
+  printf 'policy:         %s\n' "$EGRESS_POLICY"
+  printf 'no_proxy:       %s\n' "$NO_PROXY_VALUE"
+}
+
 host_pi_version="$(pi --version 2>/dev/null | head -n 1 | tr -d '[:space:]' || true)"
 PI_VERSION="${PI_VERSION:-${host_pi_version:-1.4.0}}"
 PI_IMAGE="${PI_IMAGE:-localhost/pi-sandbox:${PI_VERSION}}"
+EGRESS_PROXY_IMAGE="${PI_SANDBOX_EGRESS_IMAGE:-localhost/pi-sandbox-egress:${PI_VERSION}}"
 
 PI_BASE_IMAGE="${PI_BASE_IMAGE:-node:24-trixie-slim}"
 
@@ -109,6 +266,11 @@ dry_run=0
 no_mcp=0
 mcp_token_import=""
 scratch_workspace_dir=""
+start_egress=0
+stop_egress=0
+restart_egress=0
+egress_status=0
+check_egress_policy=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -126,6 +288,26 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-mcp)
       no_mcp=1
+      shift
+      ;;
+    --start-egress)
+      start_egress=1
+      shift
+      ;;
+    --stop-egress)
+      stop_egress=1
+      shift
+      ;;
+    --restart-egress)
+      restart_egress=1
+      shift
+      ;;
+    --egress-status)
+      egress_status=1
+      shift
+      ;;
+    --check-egress-policy)
+      check_egress_policy=1
       shift
       ;;
     --mcp-token-file)
@@ -151,6 +333,55 @@ if [[ "$update_image" -eq 1 ]]; then
     -t "$PI_IMAGE" \
     -f "$IMAGE_DIR/pi.Dockerfile" \
     "$IMAGE_DIR"
+
+  echo "Rebuilding egress proxy image $EGRESS_PROXY_IMAGE from $EGRESS_PROXY_BASE_IMAGE ..."
+  podman build --pull --no-cache \
+    --build-arg "BASE_IMAGE=${EGRESS_PROXY_BASE_IMAGE}" \
+    -t "$EGRESS_PROXY_IMAGE" \
+    -f "$IMAGE_DIR/egress-proxy.Dockerfile" \
+    "$IMAGE_DIR"
+
+  if podman container exists "$EGRESS_PROXY_NAME" >/dev/null 2>&1; then
+    podman rm -f "$EGRESS_PROXY_NAME" >/dev/null 2>&1 || true
+  fi
+  exit 0
+fi
+
+if [[ "$stop_egress" -eq 1 ]]; then
+  if podman container exists "$EGRESS_PROXY_NAME" >/dev/null 2>&1; then
+    podman rm -f "$EGRESS_PROXY_NAME" >/dev/null
+    echo "Stopped egress proxy $EGRESS_PROXY_NAME."
+  else
+    echo "Egress proxy $EGRESS_PROXY_NAME is not present."
+  fi
+  exit 0
+fi
+
+if [[ "$egress_status" -eq 1 ]]; then
+  print_egress_status
+  exit 0
+fi
+
+if [[ "$check_egress_policy" -eq 1 ]]; then
+  ensure_egress_policy
+  ensure_egress_image
+  podman run --rm \
+    --network none \
+    --userns=keep-id \
+    --user "$(id -u):$(id -g)" \
+    --read-only \
+    --cap-drop=ALL \
+    --security-opt=no-new-privileges \
+    --mount "type=bind,src=$EGRESS_POLICY,dst=/etc/pi-egress/policy.conf,ro" \
+    "$EGRESS_PROXY_IMAGE" \
+    --check-policy \
+    --policy /etc/pi-egress/policy.conf
+  exit 0
+fi
+
+if [[ "$start_egress" -eq 1 || "$restart_egress" -eq 1 ]]; then
+  ensure_egress
+  print_egress_status
   exit 0
 fi
 
@@ -251,15 +482,15 @@ if [[ "$mcp_enabled" -eq 1 && "$MCP_TOKEN_AVAILABLE" -eq 0 ]]; then
   fi
 fi
 
-# Create the fixed networks used by the Pi wrapper. The MCP network is only
-# needed when the project opts in; it is created internal and never started.
+# Create the fixed networks and start the shared egress proxy. The sandbox is
+# attached only to the internal egress network; the proxy is the only container
+# with a public uplink. The MCP network stays internal and is only needed when
+# the project opts in.
 if [[ "$dry_run" -eq 0 ]]; then
-  podman network exists pi-egress >/dev/null 2>&1 \
-    || podman network create pi-egress >/dev/null
+  ensure_egress
 
   if [[ "$mcp_enabled" -eq 1 ]]; then
-    podman network exists "$MCP_NETWORK" >/dev/null 2>&1 \
-      || podman network create --internal "$MCP_NETWORK" >/dev/null
+    ensure_internal_network "$MCP_NETWORK"
 
     if [[ -z "$(podman ps -a --filter "network=$MCP_NETWORK" --format '{{.ID}}' 2>/dev/null || true)" ]]; then
       echo "Hint: no MCP container is attached to $MCP_NETWORK; the server-mcp stack appears to be down." >&2
@@ -277,14 +508,23 @@ if [[ "$dry_run" -eq 0 ]] && ! podman image exists "$PI_IMAGE"; then
 fi
 
 mounts=()
+proxy_url="http://${EGRESS_PROXY_NAME}:3128"
 envs=(
   --env "HOME=/home/$USER"
   --env "PI_CODING_AGENT_DIR=/state/pi-agent"
   --env "PI_CODING_AGENT_SESSION_DIR=/sessions"
   --env "PI_SANDBOX_PROJECT=$project_name"
   --env "GIT_TERMINAL_PROMPT=0"
+  --env "HTTP_PROXY=$proxy_url"
+  --env "HTTPS_PROXY=$proxy_url"
+  --env "ALL_PROXY=$proxy_url"
+  --env "NO_PROXY=$NO_PROXY_VALUE"
+  --env "http_proxy=$proxy_url"
+  --env "https_proxy=$proxy_url"
+  --env "all_proxy=$proxy_url"
+  --env "no_proxy=$NO_PROXY_VALUE"
 )
-networks=(--network pi-egress)
+networks=(--network "$EGRESS_NETWORK")
 
 # Pi intercepts Ctrl+V, reads an image from the Wayland clipboard with
 # wl-paste, and writes its own /tmp/pi-clipboard-<uuid>.<ext> inside the

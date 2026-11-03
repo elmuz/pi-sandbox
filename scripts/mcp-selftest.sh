@@ -159,10 +159,77 @@ case "${1:-}" in
           printf 'normal\n' > "${FAKE_PODMAN_STATE}/$name"
         fi
         ;;
+      inspect)
+        shift 2
+        format=""
+        name=""
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --format) format="$2"; shift 2 ;;
+            *) name="$1"; shift ;;
+          esac
+        done
+        [[ -f "${FAKE_PODMAN_STATE:?}/$name" ]] || exit 1
+        case "$format" in
+          *Internal*) [[ "$(<"${FAKE_PODMAN_STATE}/$name")" == "internal" ]] && echo true || echo false ;;
+          *) echo '{}' ;;
+        esac
+        ;;
       *) exit 2 ;;
     esac
     ;;
-  ps|image|run|build)
+  container)
+    case "${2:-}" in
+      exists)
+        [[ -f "${FAKE_PODMAN_STATE:?}/container-${3:?}" ]]
+        ;;
+      inspect)
+        shift 2
+        format=""
+        name=""
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --format) format="$2"; shift 2 ;;
+            *) name="$1"; shift ;;
+          esac
+        done
+        [[ -f "${FAKE_PODMAN_STATE:?}/container-$name" ]] || exit 1
+        case "$format" in
+          *State.Running*) echo true ;;
+          *) echo '{}' ;;
+        esac
+        ;;
+      *) exit 2 ;;
+    esac
+    ;;
+  run)
+    name=""
+    previous=""
+    for arg in "$@"; do
+      if [[ "$previous" == "--name" ]]; then
+        name="$arg"
+        break
+      fi
+      previous="$arg"
+    done
+    if [[ -n "$name" ]]; then
+      printf 'running\n' > "${FAKE_PODMAN_STATE}/container-$name"
+    fi
+    exit 0
+    ;;
+  rm)
+    for arg in "$@"; do
+      case "$arg" in
+        -f|--force) ;;
+        *) rm -f "${FAKE_PODMAN_STATE:?}/container-$arg" ;;
+      esac
+    done
+    exit 0
+    ;;
+  start)
+    printf 'running\n' > "${FAKE_PODMAN_STATE:?}/container-${2:?}"
+    ;;
+  ps|image|build)
     exit 0
     ;;
   *)

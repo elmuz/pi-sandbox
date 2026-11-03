@@ -13,6 +13,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${PI_SANDBOX_STATE:-${XDG_DATA_HOME:-$HOME/.local/share}/pi-sandbox}"
+CONFIG_DIR="${PI_SANDBOX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/pi-sandbox}"
 BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 MCP_TOKEN_DEST="$STATE_DIR/secrets/mcp_token"
 MCP_TOKEN_SOURCE="${PI_SANDBOX_MCP_TOKEN_FILE:-}"
@@ -37,6 +38,7 @@ done
 
 mkdir -p \
   "$BIN_DIR" \
+  "$CONFIG_DIR" \
   "$STATE_DIR/auth" \
   "$STATE_DIR/secrets" \
   "$STATE_DIR/sessions" \
@@ -45,6 +47,7 @@ mkdir -p \
   "$STATE_DIR/mcp/catafalco/audit"
 
 chmod 700 \
+  "$CONFIG_DIR" \
   "$STATE_DIR/auth" \
   "$STATE_DIR/secrets" \
   "$STATE_DIR/sessions" \
@@ -96,6 +99,12 @@ install_if_missing() {
 }
 
 install_if_missing \
+  "$REPO_DIR/examples/config.example" \
+  "$CONFIG_DIR/config" 0600
+install_if_missing \
+  "$REPO_DIR/examples/egress-policy.example.conf" \
+  "$CONFIG_DIR/egress-policy.conf" 0600
+install_if_missing \
   "$REPO_DIR/examples/mcp/catafalco/config.example.yaml" \
   "$STATE_DIR/mcp/catafalco/config.yaml" 0600
 install_if_missing \
@@ -111,5 +120,7 @@ install_if_missing \
 echo "Installed pi-sandbox:"
 echo "  repository: $REPO_DIR"
 echo "  state:      $STATE_DIR"
+echo "  config:     $CONFIG_DIR"
+echo "  egress:     $CONFIG_DIR/egress-policy.conf"
 echo "  launcher:   $BIN_DIR/pi-sandbox"
 echo "  mcp token:  $MCP_TOKEN_DEST"

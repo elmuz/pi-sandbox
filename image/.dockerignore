@@ -5,3 +5,5 @@
 !pi.Dockerfile
 !entrypoint.sh
 !sandbox-status.ts
+!egress-proxy.Dockerfile
+!egress_proxy.py

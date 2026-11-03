@@ -9,3 +9,7 @@
 *.key
 *.pem
 *.jsonl
+
+# Python test/build caches.
+__pycache__/
+*.pyc

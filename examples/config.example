@@ -1,0 +1,18 @@
+# Configuration for the pi-sandbox launcher.
+#
+# This file is sourced by bin/pi-sandbox before defaults are applied. Keep
+# values unquoted when they are simple words or paths.
+#
+# GPG signing is opt-in. Set to 1 to forward the host gpg-agent extra socket.
+# PI_SANDBOX_GPG_SIGN=1
+#
+# Resource limits. The defaults are intentionally modest for an agent harness.
+# PI_SANDBOX_CPUS=2
+# PI_SANDBOX_NOFILE=8192
+#
+# Egress policy file. The default lives next to this file.
+# PI_SANDBOX_EGRESS_POLICY=$HOME/.config/pi-sandbox/egress-policy.conf
+#
+# Proxy-aware tools use these variables inside the sandbox. Add internal MCP
+# hostnames here if your project uses names other than mcp-remote/mcp-disk.
+# PI_SANDBOX_NO_PROXY=localhost,127.0.0.1,::1,pi-control,mcp-remote,mcp-disk
