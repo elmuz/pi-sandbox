@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+#
+# Run the same checks as the CI lint job before pushing.
+#
+# Enable it with:
+#   git config core.hooksPath .githooks
+#
+# Skip a single push with:
+#   PI_SANDBOX_SKIP_LINT=1 git push
+
+set -euo pipefail
+
+if [[ "${PI_SANDBOX_SKIP_LINT:-0}" == "1" ]]; then
+  echo "pre-push: checks skipped (PI_SANDBOX_SKIP_LINT=1)" >&2
+  exit 0
+fi
+
+exec "$(git rev-parse --show-toplevel)/scripts/lint.sh" --with-tests

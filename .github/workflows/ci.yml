@@ -23,47 +23,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Lint shell scripts
-        uses: ludeeus/action-shellcheck@2.0.0
-        with:
-          scandir: .
-          severity: warning
-
-      - name: Run MCP contract self-test
-        run: scripts/mcp-selftest.sh
-
-      - name: Run isolation self-test
-        run: scripts/isolation-test.sh
-
-      - name: Lint Pi Dockerfile
-        uses: hadolint/hadolint-action@v3.5.0
-        with:
-          dockerfile: image/pi.Dockerfile
-          config: .hadolint.yaml
-          failure-threshold: warning
-
-      - name: Lint egress proxy Dockerfile
-        uses: hadolint/hadolint-action@v3.5.0
-        with:
-          dockerfile: image/egress-proxy.Dockerfile
-          config: .hadolint.yaml
-          failure-threshold: warning
-
-      - name: Lint YAML
-        uses: ibiqlik/action-yamllint@v3.1.1
-        with:
-          file_or_dir: compose examples .github .yamllint.yml
-          config_file: .yamllint.yml
-
-      - name: Lint Markdown
-        uses: DavidAnson/markdownlint-cli2-action@v25.0.0
-        with:
-          globs: |
-            **/*.md
-            **/*.markdown
-
-      - name: Lint workflows
-        uses: raven-actions/actionlint@v2.2.0
+      # One entrypoint for CI and local development, with pinned versions, so
+      # a clean `scripts/lint.sh --with-tests` run predicts this job.
+      - name: Run linters and self-tests
+        run: scripts/lint.sh --with-tests
 
   build:
     name: Build image

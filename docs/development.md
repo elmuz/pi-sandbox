@@ -21,7 +21,9 @@ pi-sandbox/
 ├── examples/egress-policy.example.conf
 ├── examples/mcp.json              sandbox project MCP config example
 ├── examples/mcp/target/           optional target config templates
+├── .githooks/pre-push             runs the linters before every push
 ├── scripts/isolation-test.sh      static and live isolation checks
+├── scripts/lint.sh                shared lint entrypoint for CI and local use
 ├── scripts/mcp-selftest.sh        contract checks without an MCP stack
 ├── install.sh                     creates state dirs and symlinks the launcher
 ├── LICENSE                        MIT license
@@ -33,7 +35,8 @@ Lint rules live in `.hadolint.yaml`, `.yamllint.yml` and
 
 ## CI
 
-`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests:
+`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests.
+The lint job only calls `scripts/lint.sh --with-tests`, which performs:
 
 - ShellCheck on the launcher, installer, scripts and entrypoint;
 - the MCP contract self-test, which does not need an MCP stack;
@@ -41,11 +44,39 @@ Lint rules live in `.hadolint.yaml`, `.yamllint.yml` and
 - Hadolint on both Dockerfiles;
 - yamllint on the Compose file, examples and workflow;
 - markdownlint on Markdown files;
-- actionlint on the workflow itself;
-- a Docker build of `image/pi.Dockerfile`, followed by a `pi --version`
-  smoke test;
-- a Docker build of `image/egress-proxy.Dockerfile`, followed by a policy
-  validation smoke test.
+- actionlint on the workflow itself.
+
+The `build` and `proxy` jobs then build `image/pi.Dockerfile` and
+`image/egress-proxy.Dockerfile`, followed by a `pi --version` smoke test and
+a policy validation smoke test.
+
+## Local checks
+
+CI and local development share one entrypoint, with pinned tool versions:
+
+```bash
+scripts/lint.sh --with-tests
+```
+
+The pins are ShellCheck 0.11.0, Hadolint 2.15.1, yamllint 1.38.0,
+markdownlint-cli2 0.24.0 and actionlint 1.7.12. A tool is taken from `PATH`
+only when its version matches the pin exactly; otherwise the same version
+runs from a container image through podman or docker. Running this script
+before a push therefore reproduces the CI lint job instead of approximating
+it: a version skew cannot hide a finding that CI would report, and the
+reverse is equally true.
+
+Enable the pre-push hook so the checks run automatically:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+A push can still bypass it when needed:
+
+```bash
+PI_SANDBOX_SKIP_LINT=1 git push
+```
 
 ## Tests
 
