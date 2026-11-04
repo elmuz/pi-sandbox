@@ -984,7 +984,8 @@ mounts+=(
 # Optional GitHub CLI token. It is a capability: any Pi container with this
 # environment variable can use GitHub as that token. Prefer a fine-grained PAT.
 if [[ "$enable_gh_token" == "1" && -f "$STATE_DIR/secrets/gh_token" ]]; then
-  export GH_TOKEN="$(<"$STATE_DIR/secrets/gh_token")"
+  gh_token="$(<"$STATE_DIR/secrets/gh_token")"
+  export GH_TOKEN="$gh_token"
   mounts+=(--mount "type=bind,src=$STATE_DIR/secrets/gh_token,dst=/secrets/gh_token,ro")
   envs+=(--env GH_TOKEN)
   github_enabled=1
