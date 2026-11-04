@@ -2,42 +2,64 @@
 
 ## Workspaces
 
-Start Pi in a project directory:
+The host workspace is not mounted by default. Select a mode explicitly:
 
 ```bash
-cd ~/code/some-project
-pi-sandbox
+pi-sandbox --workspace-mode none   # default: empty /workspace
+pi-sandbox --workspace-mode ro     # project mounted read-only
+pi-sandbox --workspace-mode rw     # project mounted read-write
 ```
 
-Or name the workspace explicitly:
+Set the default persistently in `~/.config/pi-sandbox/config`:
 
 ```bash
-pi-sandbox --workspace ~/code/some-project
+PI_SANDBOX_WORKSPACE_MODE=rw
 ```
 
-The project is mounted read-write. If it lives under the host home directory,
-it is also mounted at the same absolute path inside the container so Pi can use
-the real project path.
+| Mode | Host workspace | Use when |
+| --- | --- | --- |
+| `none` | Not mounted; writable tmpfs | Agent must not touch the checkout |
+| `ro` | Mounted read-only | Agent may read code, not modify it |
+| `rw` | Mounted read-write | Accept host-side execution risk |
 
-Launching from `$HOME` or `/` does not mount that directory. The launcher
-creates a temporary empty workspace under `${TMPDIR:-/tmp}`, starts Pi there,
-and deletes it when the container exits. This is useful for chats that only
-need network access and the tools in the image.
+`ro` protects the host workspace from modification. It does not protect
+confidentiality: Pi can read files in the checkout, including secrets, and send
+them to the model provider or through the egress proxy. `none` avoids both
+integrity and confidentiality exposure from the checkout.
+
+Earlier versions mounted the workspace read-write by default. To keep that
+behaviour after upgrading, set `PI_SANDBOX_WORKSPACE_MODE=rw` in the launcher
+config or pass `--workspace-mode rw`.
+
+Name the project path explicitly with `--workspace PATH`. The path determines
+the project identity for state and sessions even when it is not mounted.
+
+When the project is mounted and lives under the host home directory, it is also
+mirrored at the same absolute path inside the container so Pi can use the real
+project path. With `none`, Pi starts in `/workspace`.
+
+Launching from `$HOME` or `/` never mounts that directory. The launcher creates
+a temporary empty workspace under `${TMPDIR:-/tmp}`, starts Pi there, and
+deletes it when the container exits. Scratch workspaces are always disposable
+and mounted read-write, regardless of `PI_SANDBOX_WORKSPACE_MODE`.
 
 Scratch runs use a stable `scratch` identity for the Pi state volume and the
 session directory, so a later scratch run can resume an earlier conversation.
 Files created under `/workspace` are temporary and are not kept; use a project
-directory for work that must persist.
+directory with a mounted workspace for work that must persist.
 
 ## Working directory and footer
 
 Pi builds its footer from the process working directory. The launcher used to
 start Pi in `/workspace`, so every session showed `workspace` in the footer.
 
-When the project lives under the host home directory, the launcher also mounts
-it at the same absolute path inside the container and starts Pi there. The
-footer then shows the actual project, for example `~/code/foo`, which makes
-concurrent sessions distinguishable.
+When the project is mounted with `ro` or `rw` and lives under the host home
+directory, the launcher also mounts it at the same absolute path inside the
+container and starts Pi there. The footer then shows the actual project, for
+example `~/code/foo`, which makes concurrent sessions distinguishable.
+
+With `none`, Pi starts in the empty `/workspace`, so the built-in footer shows
+`workspace`; the container-only marker still shows the project name.
 
 Sessions created before this change still record `/workspace` as their working
 directory. Start a new session to get the mirrored path in the footer.
@@ -143,14 +165,25 @@ APPEND_SYSTEM.md
 ## Network
 
 The sandbox has no direct internet or LAN route. It sends HTTP(S) traffic to
-the internal egress proxy. Configure allow/deny rules and inspect the proxy in
-[Egress](egress.md).
+the internal egress proxy, which denies every destination by default. Add
+narrow `allow` rules for the model provider and any package or git endpoints,
+then restart the proxy. See [Egress](egress.md).
 
 ## Clipboard images
 
-Pi intercepts `ctrl+v` itself; the screenshot tool only puts the cropped image
-on the Wayland clipboard. On paste, Pi runs `wl-paste`, reads the image bytes,
-writes them to its own temporary file inside the container
+Clipboard access is off by default. Enable it for one launch or persistently:
+
+```bash
+pi-sandbox --clipboard
+```
+
+```bash
+PI_SANDBOX_CLIPBOARD=1
+```
+
+When enabled, Pi intercepts `ctrl+v` itself; the screenshot tool only puts the
+cropped image on the Wayland clipboard. On paste, Pi runs `wl-paste`, reads the
+image bytes, writes them to its own temporary file inside the container
 (`/tmp/pi-clipboard-<uuid>.<ext>`), and inserts that path into the editor.
 
 That is why the file is in `/tmp` and has a `pi-clipboard-` prefix: Pi created
@@ -164,7 +197,9 @@ To support this, the launcher:
 - sets `WAYLAND_DISPLAY=/tmp/wayland-0` and `XDG_RUNTIME_DIR=/tmp`.
 
 The container can read your clipboard while that socket is connected. The rest
-of `$XDG_RUNTIME_DIR` is not mounted. Rebuild the image once after this change:
+of `$XDG_RUNTIME_DIR` is not mounted. Use `--no-clipboard` or set
+`PI_SANDBOX_CLIPBOARD=0` to keep it off. Rebuild the image once after a Pi
+update:
 
 ```bash
 pi-sandbox --update

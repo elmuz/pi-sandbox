@@ -5,7 +5,7 @@
 - Rootless Podman.
 - A host Pi installation for version matching. The launcher falls back to
   `1.4.0` when `pi --version` is unavailable.
-- Linux. Wayland is optional but required for clipboard image paste.
+- Linux. Wayland is optional and clipboard access is opt-in.
 
 ## Install
 
@@ -43,7 +43,7 @@ Runtime state lives outside the repository:
 ├── secrets/                       MCP bearer token (mode 0600 or 0400)
 ├── sessions/                      shared per-project sessions
 ├── gpg/home/                      public keyring for opt-in signing
-└── mcp/catafalco/                 target config, key, known_hosts, audit
+└── mcp/target/                 target config, key, known_hosts, audit
 ```
 
 `PI_SANDBOX_STATE` overrides the runtime state directory.
@@ -73,21 +73,57 @@ The launcher reads `pi --version` and builds that tag if it is missing.
 It also builds the egress proxy image if it is missing. Trixie is the only
 supported Pi base image.
 
+A fresh sandbox is intentionally inert: it cannot call a model and it cannot see
+your project. That is deliberate. To use it as a coding agent, open the two
+doors that matter and leave everything else closed:
+
+1. allow your model provider in the egress policy (see
+   [Egress and signing](#egress-and-signing));
+2. mount the project with `--workspace-mode rw`.
+
+By default the host workspace is **not** mounted. Pi runs in an empty,
+disposable `/workspace`:
+
 ```bash
 cd ~/code/some-project
 pi-sandbox
 ```
 
-or:
+To let Pi read the checkout:
 
 ```bash
-pi-sandbox --workspace ~/code/some-project
+pi-sandbox --workspace-mode ro
 ```
 
-Launching from `$HOME` or `/` does not mount that directory. Instead, the
-launcher creates a temporary empty workspace under `${TMPDIR:-/tmp}`, starts Pi
-there, and deletes it when the container exits. See
-[workspaces](usage.md#workspaces) for the scratch-mode details.
+To let Pi edit it:
+
+```bash
+pi-sandbox --workspace-mode rw
+```
+
+Or select the project path explicitly:
+
+```bash
+pi-sandbox --workspace ~/code/some-project --workspace-mode rw
+```
+
+To opt in persistently, add this to `~/.config/pi-sandbox/config`:
+
+```bash
+PI_SANDBOX_WORKSPACE_MODE=rw
+```
+
+A read-write mount is a trust decision: the agent can plant files that a
+host-side git, Pi, test, build, deploy or IDE process may execute later. Use
+`none` or `ro` when that is outside your threat model, or keep a separate clone
+for sandbox sessions. See
+[workspace exposure](security.md#workspace-exposure-modes).
+
+Launching from `$HOME` or `/` never mounts that directory. Instead, the launcher
+creates a temporary empty workspace under `${TMPDIR:-/tmp}`, starts Pi there,
+and deletes it when the container exits. Scratch workspaces are always
+disposable and are mounted read-write. See
+[workspaces](usage.md#workspaces) for details.
 
 ## Update the image
 
@@ -109,14 +145,21 @@ PI_VERSION=1.4.0 pi-sandbox --update
 
 ## Egress and signing
 
-The sandbox has no direct internet or LAN route. Review and edit the policy:
+The sandbox has no direct internet or LAN route. Egress denies every
+destination by default, so Pi cannot reach its model provider until you add a
+narrow allow rule. Review and edit the policy:
 
 ```bash
 $EDITOR ~/.config/pi-sandbox/egress-policy.conf
+# For example, add: allow openrouter.ai 443
 pi-sandbox --check-egress-policy
-pi-sandbox --start-egress
+pi-sandbox --restart-egress
 pi-sandbox --egress-status
 ```
+
+Other capabilities are also off by default: workspace mount, clipboard, GitHub
+token, host GPG signing and MCP. See
+[capability defaults](security.md#capability-defaults).
 
 Host GPG signing is opt-in. Enable it once:
 

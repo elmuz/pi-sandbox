@@ -2,7 +2,7 @@
 #
 # The authoritative deployment is the server-mcp Quadlet stack
 # (mcp-remote.container and mcp-disk.container). This Compose file is an
-# alternative scaffold for one remote target: catafalco.
+# alternative scaffold for one example remote target.
 #
 # Network contract:
 #   - the only shared network is the internal pi-control bridge;
@@ -59,11 +59,11 @@ services:
     environment:
       REMOTE_SERVER_MCP_CONFIG: /etc/server-mcp/config.yaml
     volumes:
-      - ${PI_SANDBOX_STATE:?set PI_SANDBOX_STATE}/mcp/catafalco/config.yaml:/etc/server-mcp/config.yaml:ro
-      - ${PI_SANDBOX_STATE:?set PI_SANDBOX_STATE}/mcp/catafalco/.env:/etc/server-mcp/.env:ro
-      - ${PI_SANDBOX_STATE:?set PI_SANDBOX_STATE}/mcp/catafalco/ssh/id_ed25519:/run/secrets/ssh_key:ro
-      - ${PI_SANDBOX_STATE:?set PI_SANDBOX_STATE}/mcp/catafalco/known_hosts:/etc/server-mcp/known_hosts:ro
-      - ${PI_SANDBOX_STATE:?set PI_SANDBOX_STATE}/mcp/catafalco/audit:/var/lib/server-mcp:rw
+      - ${PI_SANDBOX_STATE:?set PI_SANDBOX_STATE}/mcp/target/config.yaml:/etc/server-mcp/config.yaml:ro
+      - ${PI_SANDBOX_STATE:?set PI_SANDBOX_STATE}/mcp/target/.env:/etc/server-mcp/.env:ro
+      - ${PI_SANDBOX_STATE:?set PI_SANDBOX_STATE}/mcp/target/ssh/id_ed25519:/run/secrets/ssh_key:ro
+      - ${PI_SANDBOX_STATE:?set PI_SANDBOX_STATE}/mcp/target/known_hosts:/etc/server-mcp/known_hosts:ro
+      - ${PI_SANDBOX_STATE:?set PI_SANDBOX_STATE}/mcp/target/audit:/var/lib/server-mcp:rw
     command:
       - remote-server-mcp
       - --config

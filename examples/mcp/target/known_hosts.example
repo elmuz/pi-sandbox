@@ -1,7 +1,7 @@
 # SSH known_hosts for the target.
 #
 # Add the target host key on the host, for example:
-#   ssh-keyscan -H catafalco.example.com >> \
-#     ~/.local/share/pi-sandbox/mcp/catafalco/known_hosts
+#   ssh-keyscan -H mcp.example.com >> \
+#     ~/.local/share/pi-sandbox/mcp/target/known_hosts
 #
 # Do not disable host key verification.

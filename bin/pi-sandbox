@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Launch an interactive Pi coding-agent container with:
-#   - only the project workspace bind-mounted read-write
+#   - no host workspace mount by default; opt in with --workspace-mode
 #   - read-only global Pi config
 #   - per-project state and session storage
 #   - shared provider/MCP credentials
@@ -11,23 +11,37 @@
 #   cd /path/to/project
 #   pi-sandbox [pi arguments...]
 #   pi-sandbox --workspace /path/to/project [pi arguments...]
+#   pi-sandbox --workspace-mode none|ro|rw [pi arguments...]
 #   pi-sandbox --dry-run
 #   pi-sandbox --mcp-token-file PATH
 #   pi-sandbox --no-mcp
 #   pi-sandbox --update
 #   pi-sandbox --gpg-sign
+#   pi-sandbox --clipboard | --no-clipboard
+#   pi-sandbox --gh-token | --no-gh-token
 #   pi-sandbox --start-egress
 #   pi-sandbox --stop-egress
 #   pi-sandbox --egress-status
 #
 # The sandbox has no direct internet route. A shared egress proxy container is
 # the only member with a public network; the sandbox joins the internal
-# pi-egress network and uses HTTP(S)_PROXY. The proxy allows public destinations
-# and blocks non-public ones unless the host-owned policy allows them.
+# pi-egress network and uses HTTP(S)_PROXY. The proxy denies all destinations by
+# default, including public ones; the host-owned policy must explicitly allow
+# the model provider and any package or git endpoints.
+#
+# The host workspace is not mounted by default. PI_SANDBOX_WORKSPACE_MODE
+# accepts none (default), ro or rw; --workspace-mode overrides it for one
+# launch. With none, /workspace is an empty writable tmpfs. With ro/rw the
+# project is mounted at /workspace and, under $HOME, mirrored at its host path.
 #
 # Starting in $HOME or / uses a temporary empty workspace instead of mounting
-# that directory. The temporary directory is removed when the container exits.
+# that directory. Scratch workspaces are always disposable and mounted
+# read-write. The temporary directory is removed when the container exits.
 # Its Pi state and sessions use the stable name "scratch".
+#
+# Wayland clipboard access and the GitHub CLI token are opt-in capabilities,
+# disabled by default. Enable them with PI_SANDBOX_CLIPBOARD=1 and
+# PI_SANDBOX_GH_TOKEN=1 or the matching command-line flags.
 #
 # The MCP control network is attached only when the project has
 # .pi/mcp.json or the sandbox-specific .pi/mcp.sandbox.json. The latter is
@@ -75,6 +89,8 @@ GPG_SIGN="${PI_SANDBOX_GPG_SIGN:-0}"
 CPUS="${PI_SANDBOX_CPUS:-2}"
 NOFILE="${PI_SANDBOX_NOFILE:-8192}"
 SECRET_SCAN="${PI_SANDBOX_SECRET_SCAN:-1}"
+CLIPBOARD="${PI_SANDBOX_CLIPBOARD:-0}"
+GH_TOKEN_ENABLED="${PI_SANDBOX_GH_TOKEN:-0}"
 
 # Identity of this launcher process. Container names already embed $$; the
 # start time disambiguates a recycled PID when sweeping stale containers.
@@ -83,6 +99,9 @@ launcher_start="$(awk '{print $22}' "/proc/$launcher_pid/stat" 2>/dev/null || tr
 container_name=""
 container_started=0
 podman_pid=""
+clipboard_mounted=0
+github_enabled=0
+gpg_forwarded=0
 
 # Match the server-mcp token-file rule: regular, non-empty, one line, and
 # readable by the owner only. The value is kept in a variable, never in argv.
@@ -150,17 +169,37 @@ ensure_egress_policy() {
     cat > "$EGRESS_POLICY" <<'EOF'
 # pi-sandbox egress policy.
 #
-# The sandbox has no direct internet or LAN route. Public destinations are
-# allowed through the egress proxy; non-public addresses are blocked. Add
-# explicit rules only when you need them:
+# The sandbox has no direct internet or LAN route. The default is to deny every
+# destination, including public ones. Add narrow allow rules for exactly what
+# the agent needs.
 #
+#   default deny                      # default when omitted
+#   default allow                     # legacy public-by-default (not recommended)
+#   allow <hostname|IP|CIDR> [port]   # permit a destination
 #   deny  <hostname|IP|CIDR> [port]   # block a destination
-#   allow <hostname|IP|CIDR> [port]   # permit a private/local destination
 #
-# Explicit deny wins over explicit allow. Hostname rules also match subdomains.
-# Add the MCP target here when it is on a public address, for example:
-#   deny catafalco.example.com
+# Hostname rules also match subdomains. Explicit deny wins over explicit allow.
+# Pi needs its model provider; add only the endpoint you use, for example:
+#   allow openrouter.ai 443
+#   allow api.openai.com 443
+#   allow api.anthropic.com 443
+#
+# Package managers and git hosts need explicit rules too:
+#   allow registry.npmjs.org 443
+#   allow pypi.org 443
+#   allow files.pythonhosted.org 443
+#   allow github.com 443
+#   allow codeload.github.com 443
+#
+# For a self-hosted LAN resource, add a narrow allow entry:
+#   allow 192.168.1.50
+#   allow 192.168.1.0/24 443
+#
+# If you use `default allow`, deny targets the sandbox must not reach directly:
+#   deny mcp.example.com
 #   deny 203.0.113.10
+
+default deny
 EOF
   )
   chmod 600 "$EGRESS_POLICY"
@@ -317,9 +356,12 @@ done
 WATCHDOG
 )"
 
-  setsid bash -c "$script" pi-sandbox-watchdog \
-    "$launcher_pid" "$launcher_start" "$container_name" "$scratch_workspace_dir" \
-    </dev/null >/dev/null 2>&1 &
+  (
+    unset GH_TOKEN MCP_TOKEN
+    exec setsid bash -c "$script" pi-sandbox-watchdog \
+      "$launcher_pid" "$launcher_start" "$container_name" "$scratch_workspace_dir" \
+      </dev/null >/dev/null 2>&1
+  ) &
 }
 
 # Remove containers left behind when a launcher died without running its EXIT
@@ -357,9 +399,68 @@ remove_stale_containers() {
   )
 }
 
+warn_enabled_capabilities() {
+  [[ "${PI_SANDBOX_WARN:-1}" == "1" ]] || return 0
+
+  local -a rows=()
+  local allow_count=0
+  local default_allow=0
+
+  if [[ -z "$scratch_workspace_dir" ]]; then
+    case "$effective_workspace_mode" in
+      ro)
+        rows+=("workspace  $workspace (read-only; readable data can leave the sandbox)")
+        ;;
+      rw)
+        rows+=("workspace  $workspace (read-write; host-side tools may execute agent-written files)")
+        ;;
+    esac
+  fi
+
+  if [[ -f "$EGRESS_POLICY" ]]; then
+    if grep -Eq '^[[:space:]]*default[[:space:]]+allow([[:space:]]|$)' "$EGRESS_POLICY"; then
+      default_allow=1
+    fi
+    allow_count="$(grep -Ec '^[[:space:]]*allow[[:space:]]' "$EGRESS_POLICY" || true)"
+  fi
+  if [[ "$default_allow" -eq 1 ]]; then
+    rows+=("egress     $EGRESS_POLICY (default allow: all public destinations)")
+  elif [[ "$allow_count" -gt 0 ]]; then
+    rows+=("egress     $EGRESS_POLICY ($allow_count explicit allow rule(s))")
+  fi
+
+  if [[ "$clipboard_mounted" -eq 1 ]]; then
+    rows+=("clipboard  host Wayland clipboard visible to the agent")
+  fi
+  if [[ "$github_enabled" -eq 1 ]]; then
+    rows+=("github     GH_TOKEN exported from $STATE_DIR/secrets/gh_token")
+  fi
+  if [[ "$gpg_forwarded" -eq 1 ]]; then
+    rows+=("gpg        host gpg-agent signing socket forwarded")
+  fi
+  if [[ "$mcp_enabled" -eq 1 ]]; then
+    if [[ "$MCP_TOKEN_AVAILABLE" -eq 1 ]]; then
+      rows+=("mcp        $MCP_NETWORK network and MCP_TOKEN")
+    else
+      rows+=("mcp        $MCP_NETWORK network (no token)")
+    fi
+  fi
+
+  [[ "${#rows[@]}" -gt 0 ]] || return 0
+
+  {
+    echo "pi-sandbox: non-default capabilities enabled for this session:"
+    printf '  %s\n' "${rows[@]}"
+    echo "These are deliberate relaxations of the deny-by-default sandbox."
+    echo "Set PI_SANDBOX_WARN=0 to silence this summary and the secret warning."
+  } >&2
+}
+
 warn_workspace_secrets() {
   local -a found=()
 
+  [[ "${PI_SANDBOX_WARN:-1}" == "1" ]] || return 0
+  [[ "$effective_workspace_mode" != "none" ]] || return 0
   [[ "$SECRET_SCAN" == "1" ]] || return 0
   mapfile -t found < <(
     find "$workspace" -maxdepth 6 \
@@ -373,7 +474,11 @@ warn_workspace_secrets() {
   if [[ "${#found[@]}" -gt 0 ]]; then
     echo "Warning: workspace contains files that look like secrets:" >&2
     printf '  %s\n' "${found[@]}" >&2
-    echo "The workspace is mounted read-write. Move or remove these files if they should not be visible to Pi." >&2
+    if [[ "$effective_workspace_mode" == "ro" ]]; then
+      echo "The workspace is mounted read-only, but Pi can still read and send these files." >&2
+    else
+      echo "The workspace is mounted read-write. Move or remove these files if they should not be visible to Pi." >&2
+    fi
     echo "Set PI_SANDBOX_SECRET_SCAN=0 to silence this warning." >&2
   fi
 }
@@ -386,6 +491,7 @@ EGRESS_PROXY_IMAGE="${PI_SANDBOX_EGRESS_IMAGE:-localhost/pi-sandbox-egress:${PI_
 PI_BASE_IMAGE="${PI_BASE_IMAGE:-node:24-trixie-slim}"
 
 workspace="${PI_WORKSPACE:-$PWD}"
+workspace_mode="${PI_SANDBOX_WORKSPACE_MODE:-none}"
 update_image=0
 dry_run=0
 no_mcp=0
@@ -397,11 +503,17 @@ restart_egress=0
 egress_status=0
 check_egress_policy=0
 gpg_sign="$GPG_SIGN"
+enable_clipboard="$CLIPBOARD"
+enable_gh_token="$GH_TOKEN_ENABLED"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --workspace)
       workspace="${2:?--workspace needs a path}"
+      shift 2
+      ;;
+    --workspace-mode)
+      workspace_mode="${2:?--workspace-mode needs none, ro or rw}"
       shift 2
       ;;
     --update)
@@ -444,6 +556,22 @@ while [[ $# -gt 0 ]]; do
       gpg_sign=0
       shift
       ;;
+    --clipboard)
+      enable_clipboard=1
+      shift
+      ;;
+    --no-clipboard)
+      enable_clipboard=0
+      shift
+      ;;
+    --gh-token)
+      enable_gh_token=1
+      shift
+      ;;
+    --no-gh-token)
+      enable_gh_token=0
+      shift
+      ;;
     --mcp-token-file)
       mcp_token_import="${2:?--mcp-token-file needs a path}"
       shift 2
@@ -466,6 +594,22 @@ if ! [[ "$NOFILE" =~ ^[0-9]+$ ]]; then
   echo "PI_SANDBOX_NOFILE must be an integer, for example 8192: $NOFILE" >&2
   exit 2
 fi
+case "$workspace_mode" in
+  none|ro|rw) ;;
+  *)
+    echo "PI_SANDBOX_WORKSPACE_MODE must be none, ro or rw: $workspace_mode" >&2
+    exit 2
+    ;;
+esac
+for toggle in "$enable_clipboard" "$enable_gh_token"; do
+  case "$toggle" in
+    0|1) ;;
+    *)
+      echo "PI_SANDBOX_CLIPBOARD and PI_SANDBOX_GH_TOKEN must be 0 or 1." >&2
+      exit 2
+      ;;
+  esac
+done
 
 # Rebuilding the image does not need a workspace and must work from anywhere.
 if [[ "$update_image" -eq 1 ]]; then
@@ -547,6 +691,13 @@ if [[ "$workspace" == "/" || "$workspace" == "$home_dir" ]]; then
   echo "Using temporary workspace $workspace" >&2
 fi
 
+# A generated scratch directory is disposable and safe to mount read-write
+# even when the host project is not mounted.
+effective_workspace_mode="$workspace_mode"
+if [[ -n "$scratch_workspace_dir" ]]; then
+  effective_workspace_mode="rw"
+fi
+
 cleanup() {
   # Stop the background podman client first. Otherwise it could still create
   # the container after the remove below, leaving a fresh dangling one.
@@ -577,8 +728,6 @@ case "$workspace" in
     ;;
 esac
 
-warn_workspace_secrets
-
 if [[ -n "$scratch_workspace_dir" ]]; then
   project_name="scratch"
   project_id="scratch"
@@ -593,17 +742,38 @@ else
   session_dir="$STATE_DIR/sessions/${project_name}-${project_id}"
 fi
 
-# Pi's footer shows the process working directory. Mirror the project at its
-# host path and start Pi there, so the footer identifies the actual project
-# (for example ~/code/foo) instead of the generic /workspace.
+# Pi's footer shows the process working directory. When the project is
+# mounted, mirror it at its host path and start Pi there, so the footer
+# identifies the actual project (for example ~/code/foo) instead of the
+# generic /workspace. With no mount, use an empty writable /workspace.
 container_workspace="/workspace"
 mirror_mounts=()
+workspace_mounts=()
+workspace_mount_opts=""
 
-# Only mirror paths under the host home directory. Mounting an arbitrary
-# absolute path over the container root filesystem could hide system files.
-if [[ "$workspace" == "$HOME"/* && "$workspace" != "/workspace" ]]; then
-  container_workspace="$workspace"
-  mirror_mounts+=(--mount "type=bind,src=$workspace,dst=$workspace")
+case "$effective_workspace_mode" in
+  none)
+    workspace_mounts+=(--tmpfs "/workspace:rw,nosuid,nodev,size=64m")
+    ;;
+  ro)
+    workspace_mount_opts=",ro"
+    ;;
+  rw) ;;
+esac
+
+if [[ "$effective_workspace_mode" != "none" ]]; then
+  workspace_mounts+=(
+    --mount "type=bind,src=$workspace,dst=/workspace${workspace_mount_opts}"
+  )
+
+  # Only mirror paths under the host home directory. Mounting an arbitrary
+  # absolute path over the container root filesystem could hide system files.
+  if [[ "$workspace" == "$HOME"/* && "$workspace" != "/workspace" ]]; then
+    container_workspace="$workspace"
+    mirror_mounts+=(
+      --mount "type=bind,src=$workspace,dst=$workspace${workspace_mount_opts}"
+    )
+  fi
 fi
 
 container_name="pi-${project_name}-$$"
@@ -617,7 +787,7 @@ chmod 700 "$STATE_DIR/auth" "$STATE_DIR/secrets" "$session_dir"
 # not use MCP, so a bad global token cannot silently reach a later launch.
 mcp_enabled=0
 mcp_config_source=""
-if [[ "$no_mcp" -eq 0 ]]; then
+if [[ "$no_mcp" -eq 0 && "$effective_workspace_mode" != "none" ]]; then
   if [[ -f "$workspace/$MCP_SANDBOX_CONFIG" ]]; then
     mcp_enabled=1
     mcp_config_source="$workspace/$MCP_SANDBOX_CONFIG"
@@ -698,7 +868,7 @@ networks=(--network "$EGRESS_NETWORK")
 # Pi intercepts Ctrl+V, reads an image from the Wayland clipboard with
 # wl-paste, and writes its own /tmp/pi-clipboard-<uuid>.<ext> inside the
 # container. Expose only the compositor socket, not the whole runtime dir.
-if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+if [[ "$enable_clipboard" == "1" && -n "${WAYLAND_DISPLAY:-}" ]]; then
   wayland_socket="$WAYLAND_DISPLAY"
   if [[ "$wayland_socket" != /* ]]; then
     if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
@@ -711,6 +881,7 @@ if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
   if [[ -n "$wayland_socket" && -S "$wayland_socket" ]]; then
     mounts+=(--mount "type=bind,src=$wayland_socket,dst=/tmp/wayland-0,ro")
     envs+=(--env "WAYLAND_DISPLAY=/tmp/wayland-0" --env "XDG_RUNTIME_DIR=/tmp")
+    clipboard_mounted=1
   fi
 fi
 
@@ -762,6 +933,7 @@ if [[ "$gpg_sign" == "1" ]] \
       --mount "type=bind,src=$gpg_extra_socket,dst=/run/gpg-agent/S.gpg-agent,ro"
     )
     envs+=(--env "GNUPGHOME=/gpg")
+    gpg_forwarded=1
 
     git_config=("gpg.program=gpg")
     if [[ -n "$signing_key" ]]; then
@@ -811,9 +983,13 @@ mounts+=(
 
 # Optional GitHub CLI token. It is a capability: any Pi container with this
 # environment variable can use GitHub as that token. Prefer a fine-grained PAT.
-if [[ -f "$STATE_DIR/secrets/gh_token" ]]; then
+if [[ "$enable_gh_token" == "1" && -f "$STATE_DIR/secrets/gh_token" ]]; then
+  export GH_TOKEN="$(<"$STATE_DIR/secrets/gh_token")"
   mounts+=(--mount "type=bind,src=$STATE_DIR/secrets/gh_token,dst=/secrets/gh_token,ro")
-  envs+=(--env "GH_TOKEN=$(<"$STATE_DIR/secrets/gh_token")")
+  envs+=(--env GH_TOKEN)
+  github_enabled=1
+elif [[ "$enable_gh_token" != "1" && -f "$STATE_DIR/secrets/gh_token" ]]; then
+  echo "GitHub token file is present but disabled; set PI_SANDBOX_GH_TOKEN=1 to enable it." >&2
 fi
 
 # A sandbox-specific MCP file is overlaid on the project's .pi/mcp.json inside
@@ -837,6 +1013,9 @@ if [[ "$mcp_enabled" -eq 1 ]]; then
   fi
 fi
 
+warn_enabled_capabilities
+warn_workspace_secrets
+
 run_cmd=(
   podman run --rm -it \
     --name "$container_name" \
@@ -855,7 +1034,7 @@ run_cmd=(
     --ulimit "nofile=${NOFILE}:${NOFILE}" \
     --workdir "$container_workspace" \
     --mount "type=volume,src=$home_volume,dst=/home/$USER" \
-    --mount "type=bind,src=$workspace,dst=/workspace" \
+    "${workspace_mounts[@]}" \
     --mount "type=volume,src=$state_volume,dst=/state/pi-agent" \
     --mount "type=bind,src=$session_dir,dst=/sessions" \
     --tmpfs "/tmp:rw,nosuid,nodev" \

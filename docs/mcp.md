@@ -24,7 +24,9 @@ stop, restart or update the MCP containers.
   agent cannot bypass MCP; see [Egress](egress.md).
 
 A project opts in by containing `.pi/mcp.json` or `.pi/mcp.sandbox.json`. See
-`examples/mcp.json`.
+`examples/mcp.json`. Project MCP detection requires a mounted workspace
+(`PI_SANDBOX_WORKSPACE_MODE=ro` or `rw`). With the default `none`, the launcher
+does not read the project MCP configuration or enable the control network.
 
 For an opted-in project, the launcher creates the control network with
 `--internal` if it does not exist. If the network exists but no MCP container is
@@ -61,7 +63,7 @@ This overlay is a convenience, not a security boundary. The agent has a shell
 and the MCP token, so it can call the MCP server directly or run a nested Pi with
 its own configuration. The shared workspace has a wider limitation: files the
 agent writes can later be executed by a host-side `pi`, test, build or deploy
-process. See [Shared workspace limitation](security.md#shared-workspace-limitation).
+process. See [workspace exposure modes](security.md#workspace-exposure-modes).
 
 ## Missing token
 

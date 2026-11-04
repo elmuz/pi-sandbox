@@ -43,8 +43,8 @@ mkdir -p \
   "$STATE_DIR/secrets" \
   "$STATE_DIR/sessions" \
   "$STATE_DIR/gpg/home" \
-  "$STATE_DIR/mcp/catafalco/ssh" \
-  "$STATE_DIR/mcp/catafalco/audit"
+  "$STATE_DIR/mcp/target/ssh" \
+  "$STATE_DIR/mcp/target/audit"
 
 chmod 700 \
   "$CONFIG_DIR" \
@@ -53,9 +53,9 @@ chmod 700 \
   "$STATE_DIR/sessions" \
   "$STATE_DIR/gpg" \
   "$STATE_DIR/gpg/home" \
-  "$STATE_DIR/mcp/catafalco" \
-  "$STATE_DIR/mcp/catafalco/ssh" \
-  "$STATE_DIR/mcp/catafalco/audit"
+  "$STATE_DIR/mcp/target" \
+  "$STATE_DIR/mcp/target/ssh" \
+  "$STATE_DIR/mcp/target/audit"
 
 ln -sfn "$REPO_DIR/bin/pi-sandbox" "$BIN_DIR/pi-sandbox"
 
@@ -105,17 +105,17 @@ install_if_missing \
   "$REPO_DIR/examples/egress-policy.example.conf" \
   "$CONFIG_DIR/egress-policy.conf" 0600
 install_if_missing \
-  "$REPO_DIR/examples/mcp/catafalco/config.example.yaml" \
-  "$STATE_DIR/mcp/catafalco/config.yaml" 0600
+  "$REPO_DIR/examples/mcp/target/config.example.yaml" \
+  "$STATE_DIR/mcp/target/config.yaml" 0600
 install_if_missing \
-  "$REPO_DIR/examples/mcp/catafalco/env.example" \
-  "$STATE_DIR/mcp/catafalco/.env" 0600
+  "$REPO_DIR/examples/mcp/target/env.example" \
+  "$STATE_DIR/mcp/target/.env" 0600
 install_if_missing \
-  "$REPO_DIR/examples/mcp/catafalco/known_hosts.example" \
-  "$STATE_DIR/mcp/catafalco/known_hosts" 0644
+  "$REPO_DIR/examples/mcp/target/known_hosts.example" \
+  "$STATE_DIR/mcp/target/known_hosts" 0644
 install_if_missing \
-  "$REPO_DIR/examples/mcp/catafalco/ssh/id_ed25519.example" \
-  "$STATE_DIR/mcp/catafalco/ssh/id_ed25519" 0600
+  "$REPO_DIR/examples/mcp/target/ssh/id_ed25519.example" \
+  "$STATE_DIR/mcp/target/ssh/id_ed25519" 0600
 
 echo "Installed pi-sandbox:"
 echo "  repository: $REPO_DIR"

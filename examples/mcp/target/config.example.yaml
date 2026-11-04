@@ -1,4 +1,4 @@
-# remote-server-mcp configuration for the catafalco target.
+# remote-server-mcp configuration for the example target.
 #
 # This file is mounted read-only into the MCP container. Edit it on the host,
 # then restart the service.
@@ -11,7 +11,7 @@ executor: ssh
 container_runtime: docker
 
 ssh:
-  host: "catafalco.example.com"
+  host: "mcp.example.com"
   port: 22
   username: "mcp"
   key_path: "/run/secrets/ssh_key"

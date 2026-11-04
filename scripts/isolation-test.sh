@@ -51,7 +51,11 @@ pass() {
 }
 
 mkdir -p "$TEST_HOME" "$TEST_STATE" "$TEST_CONFIG" "$TEST_PROJECT"
-printf 'deny catafalco.example.com\nallow 192.168.178.50 443\n' \
+printf '%s\n' \
+  'default deny' \
+  'allow example.com 443' \
+  'deny mcp.example.com' \
+  'allow 192.168.1.50 443' \
   > "$TEST_CONFIG/egress-policy.conf"
 chmod 600 "$TEST_CONFIG/egress-policy.conf"
 
@@ -68,6 +72,10 @@ run_launcher() {
     PI_SANDBOX_EGRESS_PROXY_NAME="$PROXY_NAME" \
     PI_SANDBOX_EGRESS_IMAGE="$EGRESS_IMAGE" \
     PI_SANDBOX_SECRET_SCAN=0 \
+    PI_SANDBOX_WARN=0 \
+    PI_SANDBOX_WORKSPACE_MODE="${WORKSPACE_MODE:-none}" \
+    PI_SANDBOX_CLIPBOARD="${CLIPBOARD_MODE:-0}" \
+    PI_SANDBOX_GH_TOKEN="${GH_TOKEN_MODE:-0}" \
     PI_VERSION=isolation \
     PI_IMAGE=localhost/pi-sandbox:isolation \
     PI_WORKSPACE="$TEST_PROJECT" \
@@ -99,6 +107,7 @@ for needle in \
 done
 
 for forbidden in \
+  "src=$TEST_PROJECT" \
   "dst=/shared-auth" \
   "--network $EGRESS_UPLINK" \
   '--privileged' \
@@ -107,7 +116,48 @@ for forbidden in \
   grep -Fq -- "$forbidden" "$TMP_ROOT/dry-run" \
     && fail "dry-run contains forbidden setting: $forbidden"
 done
+grep -Fq -- '/workspace:rw' "$TMP_ROOT/dry-run" \
+  || fail "default dry-run does not use an empty /workspace"
 pass "launcher flags, auth seed and internal network are correct"
+
+# Workspace mounts are opt-in; none is the default.
+WORKSPACE_MODE=ro run_launcher --dry-run > "$TMP_ROOT/dry-run-ro" 2> "$TMP_ROOT/dry-run-ro.err" \
+  || fail "read-only workspace dry-run exited non-zero"
+sed 's/\\//g' "$TMP_ROOT/dry-run-ro" > "$TMP_ROOT/dry-run-ro.normalized"
+grep -Fq -- "src=$TEST_PROJECT,dst=/workspace,ro" "$TMP_ROOT/dry-run-ro.normalized" \
+  || fail "read-only workspace mount is missing"
+pass "read-only workspace mount is opt-in"
+
+WORKSPACE_MODE=rw run_launcher --dry-run > "$TMP_ROOT/dry-run-rw" 2> "$TMP_ROOT/dry-run-rw.err" \
+  || fail "read-write workspace dry-run exited non-zero"
+sed 's/\\//g' "$TMP_ROOT/dry-run-rw" > "$TMP_ROOT/dry-run-rw.normalized"
+grep -Fq -- "src=$TEST_PROJECT,dst=/workspace" "$TMP_ROOT/dry-run-rw.normalized" \
+  || fail "read-write workspace mount is missing"
+grep -Fq -- "src=$TEST_PROJECT,dst=/workspace,ro" "$TMP_ROOT/dry-run-rw.normalized" \
+  && fail "read-write workspace mount is read-only"
+pass "read-write workspace mount is opt-in"
+
+# GitHub token is a capability and its value never reaches the podman argv.
+mkdir -p "$TEST_STATE/secrets"
+printf 'gh-test-token-do-not-print\n' > "$TEST_STATE/secrets/gh_token"
+chmod 600 "$TEST_STATE/secrets/gh_token"
+run_launcher --dry-run > "$TMP_ROOT/dry-run-gh-off" 2> "$TMP_ROOT/dry-run-gh-off.err" \
+  || fail "GitHub-token-off dry-run exited non-zero"
+grep -Fq -- '/secrets/gh_token' "$TMP_ROOT/dry-run-gh-off" \
+  && fail "GitHub token is enabled by default"
+grep -Fq -- '--env GH_TOKEN' "$TMP_ROOT/dry-run-gh-off" \
+  && fail "GH_TOKEN is exported by default"
+
+GH_TOKEN_MODE=1 run_launcher --dry-run > "$TMP_ROOT/dry-run-gh-on" 2> "$TMP_ROOT/dry-run-gh-on.err" \
+  || fail "GitHub-token-on dry-run exited non-zero"
+grep -Fq -- '/secrets/gh_token' "$TMP_ROOT/dry-run-gh-on" \
+  || fail "enabled GitHub token is not mounted"
+grep -Fq -- '--env GH_TOKEN' "$TMP_ROOT/dry-run-gh-on" \
+  || fail "enabled GitHub token is not exported"
+grep -Fq -- 'gh-test-token-do-not-print' "$TMP_ROOT/dry-run-gh-on" \
+  && fail "GitHub token value leaked into the podman argv"
+rm -f "$TEST_STATE/secrets/gh_token"
+pass "GitHub token is opt-in and its value stays out of argv"
 
 # GPG is opt-in.
 grep -Fq -- 'gpg-agent' "$TMP_ROOT/dry-run" \

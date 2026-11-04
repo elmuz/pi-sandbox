@@ -22,10 +22,11 @@ sandbox (pi) ── only ──> pi-egress (internal, no NAT)
   variants, and `NO_PROXY`.
 - MCP stays on `pi-control`; it is not routed through the proxy.
 
-The proxy allows public destinations by default. It always blocks addresses
-that are not globally routable, including RFC1918, loopback, link-local, CGNAT
-and IPv6 ULA/link-local ranges. Explicit rules can deny a target or allow a
-private/local one.
+The proxy denies every destination by default, including public ones. It always
+blocks addresses that are not globally routable, including RFC1918, loopback,
+link-local, CGNAT and IPv6 ULA/link-local ranges, unless a rule explicitly
+allows them. You must add narrow allow rules for the model provider and any
+package or git endpoints the agent needs.
 
 ## What the proxy cannot do
 
@@ -52,6 +53,8 @@ workspace, because the agent can write there.
 Syntax, one rule per line:
 
 ```text
+default deny                        # default when omitted
+default allow                       # legacy public-by-default
 deny  <hostname|IP|CIDR> [port]
 allow <hostname|IP|CIDR> [port]
 ```
@@ -68,22 +71,43 @@ Precedence for each destination:
 1. explicit deny;
 2. explicit allow;
 3. non-public baseline block;
-4. public default allow.
+4. default action: deny, unless `default allow` is set.
 
-Examples:
+Example secure policy:
 
 ```text
-# The MCP target must not be reachable directly.
-# LAN targets are already blocked; this covers a public target.
-deny catafalco.example.com
+default deny
+
+# Model provider endpoint. Add only the one you use.
+allow openrouter.ai 443
+# allow api.openai.com 443
+# allow api.anthropic.com 443
+
+# Package managers and git hosts, if the agent needs them.
+allow registry.npmjs.org 443
+allow pypi.org 443
+allow files.pythonhosted.org 443
+allow github.com 443
+
+# Keep a self-hosted LAN resource reachable.
+allow docs.internal
+allow 192.168.1.50
+allow 192.168.1.0/24 443
+```
+
+For a personal threat model that accepts public-by-default, use
+`default allow` and keep deny rules for targets the sandbox must not reach
+directly:
+
+```text
+default allow
+deny mcp.example.com
 deny 203.0.113.10
 deny 203.0.113.0/24
-
-# Keep self-hosted LAN docs reachable.
-allow docs.internal
-allow 192.168.178.50
-allow 192.168.178.0/24 443
 ```
+
+Policy files are loaded when the proxy starts. After editing the policy, run
+`pi-sandbox --restart-egress` to apply it.
 
 When a request uses an IP literal, the proxy also resolves name-based rules to
 check that the literal is not the denied target. For dynamic DNS, name rules are
@@ -115,6 +139,22 @@ pi-sandbox --check-egress-policy  # validate the policy file
 
 `--update` rebuilds both the Pi image and the proxy image, and removes the old
 proxy container so the next launch recreates it.
+
+## Migration from public-by-default egress
+
+Egress now denies every destination unless a rule allows it. An existing policy
+file with no `default` directive becomes deny-by-default. Add the narrow allow
+rules you need, or add `default allow` to keep the previous behaviour for your
+personal threat model.
+
+The proxy loads both its image and the policy at container start. After
+upgrading, rebuild the images and recreate the proxy:
+
+```bash
+pi-sandbox --update
+# or, once the new proxy image exists:
+pi-sandbox --restart-egress
+```
 
 ## Migration from a public pi-egress
 

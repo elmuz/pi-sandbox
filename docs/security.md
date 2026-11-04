@@ -15,17 +15,19 @@ It runs rootless Podman with:
 - no direct internet or LAN route; only the internal `pi-egress` network
 - no Podman/Docker socket
 - no host home, host SSH keys or host namespaces
-- mirrors the project at its host absolute path and starts Pi there, so the
-  footer shows the real project path instead of `/workspace`
-- exposes only the host Wayland socket so Pi can read clipboard images
+- no host workspace mount by default; `ro` and `rw` mounts are opt-in
+- mirrors a mounted project at its host absolute path and starts Pi there, so
+  the footer shows the real project path instead of `/workspace`
+- exposes the host Wayland clipboard socket only when clipboard access is
+  explicitly enabled
 
 Mounts:
 
 | Container path | Source | Mode |
 | --- | --- | --- |
-| `/workspace` | project directory | read-write |
-| project host path | same project directory | read-write |
-| `/tmp/wayland-0` | host Wayland socket | read-only |
+| `/workspace` | project or empty tmpfs | `ro` read-only, `rw` read-write |
+| project host path | same project directory | `ro` or `rw` only |
+| `/tmp/wayland-0` | host Wayland socket | read-only, opt-in |
 | `/state/pi-agent` | named volume `pi-state-<hash>` | read-write |
 | `/home/alessio` | named volume `pi-home-<hash>` | read-write |
 | `/sessions` | `$PI_SANDBOX_STATE/sessions/<project>-<hash>` | read-write |
@@ -51,6 +53,26 @@ OpenPGP signing. The entrypoint copies the read-only global files into the
 per-project state volume. Credentials are copied from `/auth-seed` into the
 per-container tmpfs; the host auth files are never mounted read-write.
 
+## Capability defaults
+
+Everything that widens the sandbox is off unless explicitly enabled:
+
+| Capability | Default | Enable |
+| --- | --- | --- |
+| Host workspace | Not mounted | `PI_SANDBOX_WORKSPACE_MODE=ro` or `rw` |
+| Public egress | Denied | Add `allow` rules to the egress policy |
+| Wayland clipboard | Disabled | `PI_SANDBOX_CLIPBOARD=1` or `--clipboard` |
+| GitHub CLI token | Disabled | `PI_SANDBOX_GH_TOKEN=1` or `--gh-token` |
+| Host GPG signing | Disabled | `PI_SANDBOX_GPG_SIGN=1` or `--gpg-sign` |
+| MCP network | Disabled | Mounted workspace with MCP config and token |
+
+Provider auth seeding is the exception: Pi needs credentials to work, so the
+read-only auth seed is always copied into the per-container tmpfs.
+
+At startup the launcher prints one summary of the non-default capabilities that
+are enabled for that session. `PI_SANDBOX_WARN=0` silences the summary and the
+workspace secret warning; it does not change any capability.
+
 ## Egress
 
 The sandbox joins only the internal `pi-egress` network. A shared
@@ -58,11 +80,13 @@ The sandbox joins only the internal `pi-egress` network. A shared
 bridge. The sandbox receives `HTTP(S)_PROXY` and has no direct route to the
 internet or the LAN.
 
-The proxy allows public destinations by default and blocks every non-global
-address, including RFC1918, loopback, link-local, CGNAT and IPv6 ULA/link-local
-ranges. A host-owned policy can deny an MCP target or allow a private/local
-resource. Explicit deny wins over allow, so the agent cannot bypass MCP to
-reach the target directly. See [Egress](egress.md) for the policy syntax.
+The proxy denies every destination by default, including public ones. A
+host-owned policy must explicitly allow the model provider and any package or
+git endpoints the agent needs. Non-global addresses, including RFC1918,
+loopback, link-local, CGNAT and IPv6 ULA/link-local ranges, stay blocked unless
+the policy explicitly allows them. Explicit deny wins over allow, so the agent
+cannot bypass MCP to reach the target directly. See
+[Egress](egress.md) for the policy syntax and an allowlist example.
 
 Proxy decisions are logged by the proxy container. The policy file lives
 outside the workspace and is mounted read-only, so the agent cannot edit its
@@ -74,31 +98,64 @@ root-owned host firewall.
 
 ## Workspace secret warning
 
-The launcher scans up to six levels of the workspace for common secret names
-such as `.env`, `.vaults`, `*.vault_pass`, `id_*`, `*.pem`, `*.key` and
-`.netrc`. It prints a warning because the workspace is mounted read-write. The
-scan is advisory; set `PI_SANDBOX_SECRET_SCAN=0` to disable it.
+The launcher scans up to six levels of a mounted workspace for common secret
+names such as `.env`, `.vaults`, `*.vault_pass`, `id_*`, `*.pem`, `*.key` and
+`.netrc`. It prints a warning because `ro` and `rw` expose those files to Pi.
+The scan is advisory; set `PI_SANDBOX_SECRET_SCAN=0` to disable it. It does not
+run when the workspace is not mounted (`none`).
 
-## Shared workspace limitation
+## Workspace exposure modes
 
-The workspace is mounted read-write, which is required for coding. That also
-means an untrusted agent can plant files that the host later executes:
+`PI_SANDBOX_WORKSPACE_MODE` controls what the container can do with the host
+checkout. It defaults to `none`.
 
-- `.pi/mcp.json`, which host-run Pi uses for stdio MCP commands;
-- `.pi/extensions`, `.pi/settings.json` and `AGENTS.md`;
-- `.git/hooks` and other git configuration;
-- test, build, lint and deployment scripts such as `conftest.py`,
-  `pyproject.toml`, `.pre-commit-config.yaml` and `scripts/`.
+| Mode | Host checkout | What it protects |
+| --- | --- | --- |
+| `none` | Not mounted; empty tmpfs | Integrity and confidentiality |
+| `ro` | Mounted read-only | Integrity; data can still leak |
+| `rw` | Mounted read-write | Nothing after the session |
+
+The `ro` mount is useful for review and analysis. It does not prevent the agent
+from reading repository secrets and sending them to the model provider or
+through the egress proxy. The model provider already receives prompt content by
+design, so treat any mounted checkout as disclosed to that provider.
+
+The `rw` mount is the coding mode, and it is a deliberate trust decision. An
+untrusted agent can plant files that a host-side process executes later:
+
+- `.git/hooks`, plus `.git/config` settings such as `core.hooksPath`,
+  `core.fsmonitor`, `filter.*`, `diff.*`, `credential.helper`, `gpg.program`,
+  `alias.*` and `url.*.insteadOf`;
+- `.gitmodules`, `.gitattributes` filters, and executable-bit changes;
+- `.pi/mcp.json`, `.pi/mcp.sandbox.json`, `.pi/extensions`,
+  `.pi/settings.json` and `AGENTS.md`, which a host-run Pi or the launcher
+  reads; `AGENTS.md` is also prompt input, so it can steer host-side work;
+- package and build scripts, for example `package.json` lifecycle scripts,
+  `pyproject.toml`, `setup.py`, `conftest.py`, `Makefile`, `justfile`,
+  `.pre-commit-config.yaml`, `.cargo/config.toml` and `build.rs`;
+- shell and editor entry points such as `.envrc` (direnv), `.vscode/tasks.json`,
+  `.vscode/settings.json`, `.idea` run configurations and workspace trust
+  prompts;
+- deployment files such as `compose.yaml` and `Containerfile` that the host
+  later builds or runs, and CI workflows that execute remotely after a push.
+
+Ignored and untracked files are part of the risk: `.pi/`, `.env`, `.git/hooks`
+and payloads added to `.git/info/exclude` do not appear in a normal `git diff`.
+Symlinks and executable bits can also change what a host-side tool follows or
+runs.
 
 The container protects the host from direct access *during the session*. It does
 not protect a host-side process that later reads or executes the same checkout.
-Do not run host `pi`, tests, build, deploy or `pre-commit` in a workspace that an
-untrusted sandbox has written to without reviewing it first. Ignored files are
-part of the risk: `.pi/`, `.env` and `.git/hooks` do not appear in a normal
-`git diff`.
+The launcher cannot make a read-write mount safe against that later execution.
 
-Until the launcher isolates the sandbox workspace, use a separate clone for
-sandbox sessions and keep the host development checkout on a different path.
+If a read-write mount is outside your threat model:
+
+- use `none` for maximum isolation, or `ro` when Pi needs to read the code;
+- keep a separate clone for sandbox sessions and another checkout for host-side
+  development, tests and releases;
+- before running host `pi`, git hooks, tests, builds, deploys, IDEs or
+  `pre-commit` against a sandbox-written checkout, review tracked, untracked and
+  ignored files, `.git/config`, `.git/hooks` and executable bits.
 
 This limitation also applies to MCP configuration. The sandbox MCP config
 overlay in [MCP integration](mcp.md) prevents a trivial file swap, but it is not
@@ -145,10 +202,13 @@ printf '%s\n' '<fine-grained-personal-access-token>' \
 chmod 600 "$HOME/.local/share/pi-sandbox/secrets/gh_token"
 ```
 
-When that file exists, the launcher:
+The token is a capability and is off by default. Enable it with
+`PI_SANDBOX_GH_TOKEN=1` or `--gh-token`. When enabled and the file exists, the
+launcher:
 
 - mounts it read-only at `/secrets/gh_token`;
-- sets `GH_TOKEN`;
+- exports `GH_TOKEN` to the container through the environment, not the podman
+  argv;
 - lets the entrypoint configure `gh auth setup-git`;
 - rewrites GitHub SSH remotes to HTTPS so existing checkouts work without a
   mounted SSH key.
@@ -157,8 +217,8 @@ Every Pi container then gets GitHub access through that token. Prefer a
 fine-grained token limited to the repositories and scopes you actually need.
 The host's `~/.config/gh` directory is deliberately not mounted.
 
-If you want to remove GitHub access from Pi, delete the token file or run the
-container without `GH_TOKEN`.
+If you want to remove GitHub access from Pi, unset `PI_SANDBOX_GH_TOKEN`, delete
+the token file, or run the container without `GH_TOKEN`.
 
 ## Git identity
 

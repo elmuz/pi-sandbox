@@ -44,6 +44,8 @@ run_launcher() {
     TMPDIR="$TMP_ROOT" \
     PI_SANDBOX_STATE="$TEST_STATE" \
     PI_SANDBOX_MCP_NETWORK="$TEST_NETWORK" \
+    PI_SANDBOX_WORKSPACE_MODE="${WORKSPACE_MODE:-rw}" \
+    PI_SANDBOX_WARN=0 \
     PI_VERSION=selftest \
     PI_IMAGE=localhost/pi-sandbox:selftest \
     PI_WORKSPACE="$TEST_PROJECT" \
@@ -102,6 +104,18 @@ grep -Fq -- 'dst=/workspace/.pi/mcp.json' "$stdout" \
 grep -Fq -- "--network $TEST_NETWORK" "$stdout" \
   || fail "sandbox-config dry-run is missing the control network"
 pass "sandbox MCP config is overlaid on .pi/mcp.json"
+
+# 1c. The default workspace mode is none, so project MCP config is ignored.
+rm -f "$TEST_PROJECT/.pi/mcp.sandbox.json"
+stdout="$TMP_ROOT/stdout.1c"
+stderr="$TMP_ROOT/stderr.1c"
+WORKSPACE_MODE=none run_launcher --dry-run > "$stdout" 2> "$stderr" \
+  || fail "unmounted-workspace dry-run exited non-zero"
+grep -Fq -- "--network $TEST_NETWORK" "$stdout" \
+  && fail "unmounted workspace still enables the control network"
+grep -Fq -- '--env MCP_TOKEN' "$stdout" \
+  && fail "unmounted workspace still exports MCP_TOKEN"
+pass "unmounted workspace ignores project MCP config"
 
 # 2. A group/other-readable token is refused.
 chmod 644 "$TEST_TOKEN"

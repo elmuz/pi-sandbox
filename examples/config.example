@@ -3,6 +3,23 @@
 # This file is sourced by bin/pi-sandbox before defaults are applied. Keep
 # values unquoted when they are simple words or paths.
 #
+# Host workspace exposure. The default is none: Pi runs in an empty
+# disposable /workspace and cannot read or modify the host checkout.
+#   none  no host workspace (most secure)
+#   ro    read-only mount; protects integrity, not confidentiality
+#   rw    read-write mount; required for coding, but files written by the agent
+#         can be executed later by host git, test, build, deploy or IDE tools
+# PI_SANDBOX_WORKSPACE_MODE=rw
+#
+# Silence the startup capability summary and the workspace secret warning.
+# PI_SANDBOX_WARN=0
+#
+# Capabilities that are off by default. Enable only what you need.
+# Wayland clipboard access lets Pi read clipboard images (and clipboard data).
+# PI_SANDBOX_CLIPBOARD=1
+# GitHub CLI token from $PI_SANDBOX_STATE/secrets/gh_token.
+# PI_SANDBOX_GH_TOKEN=1
+#
 # GPG signing is opt-in. Set to 1 to forward the host gpg-agent extra socket.
 # PI_SANDBOX_GPG_SIGN=1
 #

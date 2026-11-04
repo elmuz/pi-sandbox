@@ -3,17 +3,20 @@
 
 The proxy is the only container with a route to the public internet. Sandbox
 containers join an internal Podman network and send HTTP(S) traffic here. The
-policy allows public destinations by default, always blocks non-global
-addresses, and supports explicit allow/deny entries for hostnames, IPs and
-CIDRs. Explicit deny entries win over explicit allow entries.
+policy denies destinations by default, always blocks non-global addresses, and
+supports explicit allow/deny entries for hostnames, IPs and CIDRs. Explicit
+deny entries win over explicit allow entries. ``default allow`` restores the
+legacy public-by-default behaviour for a personal policy.
 
 Policy file syntax (one rule per line, ``#`` starts a comment):
 
-    deny  catafalco.example.com
+    default deny
+    allow api.openai.com 443
+    deny  mcp.example.com
     deny  203.0.113.10
     deny  203.0.113.0/24
-    allow 192.168.178.50
-    allow 192.168.178.0/24 80
+    allow 192.168.1.50
+    allow 192.168.1.0/24 80
     allow docs.internal:443
 
 A trailing port is optional. For IPv6, use ``[2001:db8::1]:443`` or put the
@@ -174,9 +177,15 @@ def parse_rule(line: str, lineno: int) -> Rule | None:
     if not text:
         return None
     parts = text.split()
+    action = parts[0].lower()
+    if action == "default":
+        if len(parts) != 2 or parts[1].lower() not in ("allow", "deny"):
+            raise PolicyError(
+                f"line {lineno}: expected 'default allow' or 'default deny'"
+            )
+        return Rule(action="default", target=parts[1].lower(), port=None)
     if len(parts) not in (2, 3):
         raise PolicyError(f"line {lineno}: expected 'allow|deny TARGET [PORT]'")
-    action = parts[0].lower()
     if action not in ("allow", "deny"):
         raise PolicyError(f"line {lineno}: unknown action {parts[0]!r}")
     target, inline_port = _split_inline_port(parts[1])
@@ -216,7 +225,10 @@ class Policy:
         resolver: Callable[[str, int], Sequence[ResolvedAddress]] = resolve_addresses,
         name_cache_ttl: float = 60.0,
     ) -> None:
-        self.rules = tuple(rules)
+        rules = tuple(rules)
+        defaults = [rule for rule in rules if rule.action == "default"]
+        self.rules = tuple(rule for rule in rules if rule.action != "default")
+        self.default_allow = bool(defaults and defaults[-1].target == "allow")
         self._resolver = resolver
         self._name_cache_ttl = name_cache_ttl
         self._name_cache: dict[str, tuple[float, tuple[IPAddress, ...]]] = {}
@@ -296,6 +308,7 @@ class Policy:
                 return Decision(False, "DNS resolution returned no addresses", host, port)
             decision_host = host
 
+        explicit_allowed = name_allowed
         for address in addresses:
             ip = address.ip
             for rule in deny_rules:
@@ -306,6 +319,7 @@ class Policy:
                 self._rule_matches_ip(rule, ip, port) for rule in allow_rules
             )
             if name_allowed or allowed_by_ip:
+                explicit_allowed = True
                 continue
 
             if self._baseline_denied(ip):
@@ -313,15 +327,24 @@ class Policy:
                     False, f"non-public address {ip}", host, port, tuple(addresses)
                 )
 
+            if not self.default_allow:
+                return Decision(
+                    False, "not explicitly allowed", host, port, tuple(addresses)
+                )
+
         return Decision(
-            True, "public destination" if not name_allowed else "explicit allow",
-            host, port, tuple(addresses)
+            True,
+            "explicit allow" if explicit_allowed else "default allow",
+            host,
+            port,
+            tuple(addresses),
         )
 
     def summary(self) -> str:
         deny = sum(1 for rule in self.rules if rule.action == "deny")
         allow = sum(1 for rule in self.rules if rule.action == "allow")
-        return f"{len(self.rules)} rules ({deny} deny, {allow} allow)"
+        default = "allow" if self.default_allow else "deny"
+        return f"{len(self.rules)} rules ({deny} deny, {allow} allow), default {default}"
 
 
 def _split_host_port(target: str, default_port: int) -> tuple[str, int]:

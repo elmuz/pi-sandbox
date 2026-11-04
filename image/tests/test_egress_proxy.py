@@ -52,11 +52,17 @@ def make_policy(lines, mapping=None):
 
 
 class PolicyTests(unittest.TestCase):
-    def test_public_address_is_allowed_by_default(self):
+    def test_public_address_is_denied_by_default(self):
         policy = make_policy([])
         decision = policy.check("93.184.216.34", 443)
+        self.assertFalse(decision.allowed)
+        self.assertIn("not explicitly allowed", decision.reason)
+
+    def test_default_allow_restores_public_access(self):
+        policy = make_policy(["default allow"])
+        decision = policy.check("93.184.216.34", 443)
         self.assertTrue(decision.allowed)
-        self.assertIn("public", decision.reason)
+        self.assertIn("default allow", decision.reason)
 
     def test_private_and_link_local_ranges_are_denied(self):
         policy = make_policy([])
@@ -65,7 +71,7 @@ class PolicyTests(unittest.TestCase):
             "127.0.0.1",
             "169.254.1.1",
             "172.16.0.1",
-            "192.168.178.3",
+            "192.168.1.3",
             "::1",
             "fc00::1",
             "fe80::1",
@@ -77,69 +83,71 @@ class PolicyTests(unittest.TestCase):
 
     def test_explicit_deny_hostname_and_subdomain(self):
         policy = make_policy(
-            ["deny catafalco.example.com"],
-            {"catafalco.example.com": "203.0.113.10"},
+            ["deny mcp.example.com"],
+            {"mcp.example.com": "203.0.113.10"},
         )
-        self.assertFalse(policy.check("catafalco.example.com", 22).allowed)
-        self.assertFalse(policy.check("api.catafalco.example.com", 22).allowed)
+        self.assertFalse(policy.check("mcp.example.com", 22).allowed)
+        self.assertFalse(policy.check("api.mcp.example.com", 22).allowed)
 
     def test_explicit_deny_ip_and_cidr(self):
-        policy = make_policy(["deny 203.0.113.10", "deny 198.51.100.0/24"])
+        policy = make_policy(
+            ["default allow", "deny 203.0.113.10", "deny 198.51.100.0/24"]
+        )
         self.assertFalse(policy.check("203.0.113.10", 443).allowed)
         self.assertFalse(policy.check("198.51.100.7", 443).allowed)
         self.assertTrue(policy.check("93.184.216.34", 443).allowed)
 
     def test_explicit_deny_port_is_specific(self):
         policy = make_policy(
-            ["deny catafalco.example.com 22"],
-            {"catafalco.example.com": "93.184.216.34"},
+            ["default allow", "deny mcp.example.com 22"],
+            {"mcp.example.com": "93.184.216.34"},
         )
-        self.assertFalse(policy.check("catafalco.example.com", 22).allowed)
-        self.assertTrue(policy.check("catafalco.example.com", 443).allowed)
+        self.assertFalse(policy.check("mcp.example.com", 22).allowed)
+        self.assertTrue(policy.check("mcp.example.com", 443).allowed)
 
     def test_allow_private_target_overrides_baseline(self):
-        policy = make_policy(["allow 192.168.178.50"])
-        self.assertTrue(policy.check("192.168.178.50", 8080).allowed)
-        self.assertFalse(policy.check("192.168.178.51", 8080).allowed)
+        policy = make_policy(["allow 192.168.1.50"])
+        self.assertTrue(policy.check("192.168.1.50", 8080).allowed)
+        self.assertFalse(policy.check("192.168.1.51", 8080).allowed)
 
     def test_allow_private_target_port_is_specific(self):
-        policy = make_policy(["allow 192.168.178.50 443"])
-        self.assertTrue(policy.check("192.168.178.50", 443).allowed)
-        self.assertFalse(policy.check("192.168.178.50", 22).allowed)
+        policy = make_policy(["allow 192.168.1.50 443"])
+        self.assertTrue(policy.check("192.168.1.50", 443).allowed)
+        self.assertFalse(policy.check("192.168.1.50", 22).allowed)
 
     def test_allow_private_hostname(self):
         policy = make_policy(
             ["allow docs.internal"],
-            {"docs.internal": "192.168.178.60"},
+            {"docs.internal": "192.168.1.60"},
         )
         self.assertTrue(policy.check("docs.internal", 80).allowed)
-        self.assertFalse(policy.check("192.168.178.61", 80).allowed)
+        self.assertFalse(policy.check("192.168.1.61", 80).allowed)
 
     def test_deny_wins_over_allow(self):
         policy = make_policy(
-            ["allow 192.168.178.0/24", "deny 192.168.178.3"],
+            ["allow 192.168.1.0/24", "deny 192.168.1.3"],
         )
-        self.assertTrue(policy.check("192.168.178.50", 22).allowed)
-        self.assertFalse(policy.check("192.168.178.3", 22).allowed)
+        self.assertTrue(policy.check("192.168.1.50", 22).allowed)
+        self.assertFalse(policy.check("192.168.1.3", 22).allowed)
 
     def test_hostname_deny_is_resolved_for_ip_literals(self):
         policy = make_policy(
-            ["deny catafalco.example.com"],
-            {"catafalco.example.com": "203.0.113.10"},
+            ["deny mcp.example.com"],
+            {"mcp.example.com": "203.0.113.10"},
         )
         self.assertFalse(policy.check("203.0.113.10", 22).allowed)
 
     def test_hostname_allow_is_resolved_for_ip_literals(self):
         policy = make_policy(
             ["allow docs.internal"],
-            {"docs.internal": "192.168.178.60"},
+            {"docs.internal": "192.168.1.60"},
         )
-        self.assertTrue(policy.check("192.168.178.60", 80).allowed)
+        self.assertTrue(policy.check("192.168.1.60", 80).allowed)
 
     def test_any_denied_address_denies_the_name(self):
         policy = make_policy(
-            [],
-            {"mixed.example.com": ["93.184.216.34", "192.168.178.3"]},
+            ["default allow"],
+            {"mixed.example.com": ["93.184.216.34", "192.168.1.3"]},
         )
         self.assertFalse(policy.check("mixed.example.com", 443).allowed)
 
@@ -152,11 +160,31 @@ class PolicyTests(unittest.TestCase):
             """
             # comment
             deny 203.0.113.10
-            allow 192.168.178.0/24 443 # inline comment
+            allow 192.168.1.0/24 443 # inline comment
             """
         )
         self.assertEqual([rule.action for rule in rules], ["deny", "allow"])
         self.assertEqual(rules[1].port, 443)
+
+    def test_allow_public_hostname_with_default_deny(self):
+        policy = make_policy(
+            ["default deny", "allow api.example.com 443"],
+            {"api.example.com": "93.184.216.34"},
+        )
+        self.assertTrue(policy.check("api.example.com", 443).allowed)
+        self.assertFalse(policy.check("api.example.com", 80).allowed)
+        self.assertFalse(policy.check("other.example.com", 443).allowed)
+
+    def test_default_directive_parsing(self):
+        rule = parse_rule("default deny", 1)
+        self.assertIsNotNone(rule)
+        assert rule is not None
+        self.assertEqual(rule.action, "default")
+        self.assertEqual(rule.target, "deny")
+        with self.assertRaises(PolicyError):
+            parse_rule("default maybe", 1)
+        with self.assertRaises(PolicyError):
+            parse_rule("default", 1)
 
     def test_ipv6_inline_port(self):
         rule = parse_rule("deny [2001:db8::1]:443", 1)
