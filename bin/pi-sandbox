@@ -13,6 +13,7 @@
 #   pi-sandbox --workspace /path/to/project [pi arguments...]
 #   pi-sandbox --workspace-mode none|ro|rw [pi arguments...]
 #   pi-sandbox --dry-run
+#   pi-sandbox --mcp
 #   pi-sandbox --mcp-token-file PATH
 #   pi-sandbox --no-mcp
 #   pi-sandbox --update
@@ -22,6 +23,7 @@
 #   pi-sandbox --start-egress
 #   pi-sandbox --stop-egress
 #   pi-sandbox --egress-status
+#   pi-sandbox --help
 #
 # The sandbox has no direct internet route. A shared egress proxy container is
 # the only member with a public network; the sandbox joins the internal
@@ -43,15 +45,16 @@
 # disabled by default. Enable them with PI_SANDBOX_CLIPBOARD=1 and
 # PI_SANDBOX_GH_TOKEN=1 or the matching command-line flags.
 #
-# The MCP control network is attached only when the project has
-# .pi/mcp.json or the sandbox-specific .pi/mcp.sandbox.json. The latter is
-# mounted over .pi/mcp.json inside the container, so the host can use
-# .pi/mcp.json for a host-run Pi without weakening the sandbox. The shared MCP
-# bearer token is read from
-# $PI_SANDBOX_STATE/secrets/mcp_token when that file exists, validated against
-# the server-mcp token rules, and passed to the container as MCP_TOKEN through
-# the environment. The token value never appears in the podman argv or in
-# --dry-run output.
+# MCP is a host-controlled capability. It is disabled by default and requires
+# both a host opt-in (--mcp or PI_SANDBOX_MCP=1 in the trusted launcher config)
+# and a project config (.pi/mcp.json or the sandbox-specific
+# .pi/mcp.sandbox.json). The latter is staged in a launcher-owned temporary
+# directory and mounted over .pi/mcp.json inside the container, so a
+# repository-controlled symlink is never a mount source. The shared MCP bearer
+# token is read from $PI_SANDBOX_STATE/secrets/mcp_token when that file exists,
+# validated against the server-mcp token rules, and passed to the container as
+# MCP_TOKEN through the environment. The token value never appears in the podman
+# argv or in --dry-run output. --no-mcp wins over every opt-in.
 #
 # Source assets live in this repository. Writable runtime state lives in
 # ${XDG_DATA_HOME:-$HOME/.local/share}/pi-sandbox by default.
@@ -78,6 +81,7 @@ MCP_PROJECT_CONFIG=".pi/mcp.json"
 MCP_SANDBOX_CONFIG=".pi/mcp.sandbox.json"
 MCP_TOKEN_VALUE=""
 MCP_TOKEN_AVAILABLE=0
+MCP_OPT_IN="${PI_SANDBOX_MCP:-0}"
 EGRESS_NETWORK="${PI_SANDBOX_EGRESS_NETWORK:-pi-egress}"
 EGRESS_UPLINK="${PI_SANDBOX_EGRESS_UPLINK:-pi-egress-uplink}"
 EGRESS_PROXY_NAME="${PI_SANDBOX_EGRESS_PROXY_NAME:-pi-egress-proxy}"
@@ -99,6 +103,7 @@ launcher_start="$(awk '{print $22}' "/proc/$launcher_pid/stat" 2>/dev/null || tr
 container_name=""
 container_started=0
 podman_pid=""
+mcp_stage_dir=""
 clipboard_mounted=0
 github_enabled=0
 gpg_forwarded=0
@@ -156,6 +161,45 @@ import_mcp_token() {
     install -d -m 700 "$(dirname "$MCP_TOKEN_FILE")"
     install -m 600 "$source" "$MCP_TOKEN_FILE"
   fi
+}
+
+# Resolve a project-controlled MCP config without following it out of the
+# workspace. The workspace is already canonical here. A symlink that stays
+# inside the workspace is allowed; one that escapes is refused before podman
+# runs. The error names the path, never the contents.
+resolve_mcp_config() {
+  local candidate="$1"
+  local resolved=""
+
+  if [[ ! -e "$candidate" ]]; then
+    return 1
+  fi
+  resolved="$(realpath -e -- "$candidate" 2>/dev/null || true)"
+  if [[ -z "$resolved" ]]; then
+    echo "MCP config cannot be resolved: $candidate" >&2
+    return 2
+  fi
+  if [[ ! -f "$resolved" ]]; then
+    echo "MCP config is not a regular file: $candidate" >&2
+    return 2
+  fi
+  if [[ "${resolved#"$workspace"/}" == "$resolved" ]]; then
+    echo "Refusing MCP config outside the workspace: $candidate -> $resolved" >&2
+    return 2
+  fi
+  printf '%s\n' "$resolved"
+}
+
+# Stage the sandbox overlay in a launcher-owned directory. The mount source is
+# then a file the repository cannot replace with a symlink between validation
+# and podman run.
+stage_mcp_config() {
+  local source="$1"
+
+  mcp_stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/pi-sandbox-mcp.XXXXXX")"
+  chmod 700 "$mcp_stage_dir"
+  install -m 600 "$source" "$mcp_stage_dir/mcp.json"
+  printf '%s\n' "$mcp_stage_dir/mcp.json"
 }
 
 ensure_egress_policy() {
@@ -324,6 +368,7 @@ launcher_pid="$1"
 launcher_start="$2"
 container_name="$3"
 scratch_dir="$4"
+mcp_stage_dir="$5"
 
 while kill -0 "$launcher_pid" 2>/dev/null; do
   current="$(awk '{print $22}' "/proc/$launcher_pid/stat" 2>/dev/null || true)"
@@ -353,13 +398,14 @@ for _ in 1 2 3; do
 done
 
 [[ -n "$scratch_dir" ]] && rm -rf -- "$scratch_dir"
+[[ -n "$mcp_stage_dir" ]] && rm -rf -- "$mcp_stage_dir"
 WATCHDOG
 )"
 
   (
     unset GH_TOKEN MCP_TOKEN
     exec setsid bash -c "$script" pi-sandbox-watchdog \
-      "$launcher_pid" "$launcher_start" "$container_name" "$scratch_workspace_dir" \
+      "$launcher_pid" "$launcher_start" "$container_name" "$scratch_workspace_dir" "$mcp_stage_dir" \
       </dev/null >/dev/null 2>&1
   ) &
 }
@@ -490,10 +536,58 @@ EGRESS_PROXY_IMAGE="${PI_SANDBOX_EGRESS_IMAGE:-localhost/pi-sandbox-egress:${PI_
 
 PI_BASE_IMAGE="${PI_BASE_IMAGE:-node:24-trixie-slim}"
 
+show_help() {
+  cat <<EOF
+pi-sandbox - run the Pi coding agent in a rootless Podman sandbox
+
+Usage:
+  pi-sandbox [sandbox options] [pi arguments...]
+  pi-sandbox -- [pi arguments...]
+
+Sandbox options:
+  --workspace PATH          Project path (default: current directory)
+  --workspace-mode MODE     none (default), ro, or rw
+  --mcp                     Enable MCP for this launch
+  --no-mcp                  Disable MCP for this launch
+  --mcp-token-file PATH     Import an MCP token, then launch
+  --gpg-sign                Forward the host gpg-agent for signing
+  --no-gpg-sign             Disable gpg signing
+  --clipboard               Enable Wayland clipboard access
+  --no-clipboard            Disable clipboard access
+  --gh-token                Enable the GitHub CLI token
+  --no-gh-token             Disable the GitHub CLI token
+  --start-egress            Start the shared egress proxy
+  --stop-egress             Stop the shared egress proxy
+  --restart-egress          Restart the shared egress proxy
+  --egress-status           Show egress proxy status
+  --check-egress-policy     Validate the egress policy
+  --update                  Rebuild the sandbox and egress images
+  --dry-run                 Print the podman command and exit
+  -h, --help                Show this help and the sandboxed Pi help
+
+Any argument not listed above is passed to the Pi instance inside the
+sandbox. Use -- to force the rest of the command line to Pi.
+
+Environment:
+  PI_SANDBOX_WORKSPACE_MODE   none, ro, or rw
+  PI_SANDBOX_STATE            Runtime state directory
+  PI_SANDBOX_CONFIG_DIR       Launcher config directory
+  PI_SANDBOX_MCP              1 to enable MCP
+  PI_SANDBOX_CLIPBOARD        1 to enable clipboard access
+  PI_SANDBOX_GH_TOKEN         1 to enable the GitHub CLI token
+  PI_SANDBOX_CPUS             CPU limit (default: 2)
+  PI_SANDBOX_NOFILE           File descriptor limit (default: 8192)
+  PI_IMAGE                    Sandbox image (default: localhost/pi-sandbox:<version>)
+
+Documentation: docs/usage.md, docs/mcp.md, docs/egress.md
+EOF
+}
+
 workspace="${PI_WORKSPACE:-$PWD}"
 workspace_mode="${PI_SANDBOX_WORKSPACE_MODE:-none}"
 update_image=0
 dry_run=0
+help_requested=0
 no_mcp=0
 mcp_token_import=""
 scratch_workspace_dir=""
@@ -522,6 +616,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --dry-run)
       dry_run=1
+      shift
+      ;;
+    -h|--help)
+      help_requested=1
+      shift
+      ;;
+    --mcp)
+      MCP_OPT_IN=1
       shift
       ;;
     --no-mcp)
@@ -586,6 +688,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$help_requested" -eq 1 ]]; then
+  show_help
+  echo
+  if command -v podman >/dev/null 2>&1 &&
+    podman image exists "$PI_IMAGE" >/dev/null 2>&1; then
+    echo "Pi help from $PI_IMAGE (arguments after sandbox options are forwarded to this instance):"
+    echo
+    podman run --rm --network=none "$PI_IMAGE" pi --help || true
+  else
+    echo "Pi help is unavailable because $PI_IMAGE is not built." >&2
+    echo "Run 'pi-sandbox --update' to build it, then 'pi-sandbox --help' again." >&2
+  fi
+  exit 0
+fi
+
 if ! [[ "$CPUS" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
   echo "PI_SANDBOX_CPUS must be a number, for example 2 or 0.5: $CPUS" >&2
   exit 2
@@ -598,6 +715,13 @@ case "$workspace_mode" in
   none|ro|rw) ;;
   *)
     echo "PI_SANDBOX_WORKSPACE_MODE must be none, ro or rw: $workspace_mode" >&2
+    exit 2
+    ;;
+esac
+case "$MCP_OPT_IN" in
+  0|1) ;;
+  *)
+    echo "PI_SANDBOX_MCP must be 0 or 1: $MCP_OPT_IN" >&2
     exit 2
     ;;
 esac
@@ -713,6 +837,10 @@ cleanup() {
   if [[ -n "$scratch_workspace_dir" ]]; then
     rm -rf -- "$scratch_workspace_dir"
   fi
+
+  if [[ -n "$mcp_stage_dir" ]]; then
+    rm -rf -- "$mcp_stage_dir"
+  fi
 }
 trap cleanup EXIT
 # Run podman in the background below: bash only executes these traps while it
@@ -781,19 +909,22 @@ container_name="pi-${project_name}-$$"
 mkdir -p "$session_dir" "$STATE_DIR/auth" "$STATE_DIR/secrets"
 chmod 700 "$STATE_DIR/auth" "$STATE_DIR/secrets" "$session_dir"
 
-# Resolve the MCP contract before any podman command. A project opts in with
-# .pi/mcp.sandbox.json (preferred) or .pi/mcp.json. --no-mcp skips the contract
-# for one launch. If a token exists it is validated even when this project does
-# not use MCP, so a bad global token cannot silently reach a later launch.
+# Resolve the MCP contract before any podman command. MCP needs both a host
+# opt-in and a project config; --no-mcp wins over both. The sandbox overlay is
+# staged so the mount source is launcher-owned, and both config paths are
+# checked to stay inside the canonical workspace.
 mcp_enabled=0
 mcp_config_source=""
-if [[ "$no_mcp" -eq 0 && "$effective_workspace_mode" != "none" ]]; then
-  if [[ -f "$workspace/$MCP_SANDBOX_CONFIG" ]]; then
+mcp_overlay=0
+if [[ "$no_mcp" -eq 0 && "$MCP_OPT_IN" -eq 1 && "$effective_workspace_mode" != "none" ]]; then
+  if [[ -e "$workspace/$MCP_SANDBOX_CONFIG" ]]; then
+    resolved_config="$(resolve_mcp_config "$workspace/$MCP_SANDBOX_CONFIG")" || exit 2
     mcp_enabled=1
-    mcp_config_source="$workspace/$MCP_SANDBOX_CONFIG"
-  elif [[ -f "$workspace/$MCP_PROJECT_CONFIG" ]]; then
+    mcp_overlay=1
+    mcp_config_source="$(stage_mcp_config "$resolved_config")"
+  elif [[ -e "$workspace/$MCP_PROJECT_CONFIG" ]]; then
+    mcp_config_source="$(resolve_mcp_config "$workspace/$MCP_PROJECT_CONFIG")" || exit 2
     mcp_enabled=1
-    mcp_config_source="$workspace/$MCP_PROJECT_CONFIG"
   fi
 fi
 
@@ -802,7 +933,7 @@ if [[ "$no_mcp" -eq 0 ]]; then
     import_mcp_token "$mcp_token_import"
   fi
 
-  if [[ -e "$MCP_TOKEN_FILE" ]]; then
+  if [[ "$mcp_enabled" -eq 1 && -e "$MCP_TOKEN_FILE" ]]; then
     validate_mcp_token_file "$MCP_TOKEN_FILE" || exit 2
     MCP_TOKEN_AVAILABLE=1
   fi
@@ -996,7 +1127,7 @@ fi
 # A sandbox-specific MCP file is overlaid on the project's .pi/mcp.json inside
 # the container. The host file can therefore stay a host-run development config.
 # The overlay comes after the workspace mounts so it wins over the bind mount.
-if [[ -n "$mcp_config_source" && "$mcp_config_source" != "$workspace/$MCP_PROJECT_CONFIG" ]]; then
+if [[ "$mcp_overlay" -eq 1 ]]; then
   mirror_mounts+=(
     --mount "type=bind,src=$mcp_config_source,dst=$container_workspace/$MCP_PROJECT_CONFIG,ro"
   )

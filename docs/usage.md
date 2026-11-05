@@ -1,5 +1,16 @@
 # Usage
 
+## Help
+
+`pi-sandbox --help` prints the launcher options first, then the help of the Pi
+binary inside the sandbox image. The second part is the same help you get from
+`pi --help` in a sandbox, because every argument the launcher does not consume
+is forwarded to that Pi instance. If the image is not built yet, the launcher
+prints only its own help and tells you to run `pi-sandbox --update`.
+
+Use `pi-sandbox -- --help` to skip the launcher help and pass `--help` directly
+to Pi.
+
 ## Workspaces
 
 The host workspace is not mounted by default. Select a mode explicitly:

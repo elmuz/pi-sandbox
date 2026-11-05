@@ -168,6 +168,10 @@ The [documentation index](docs/index.md) links to every guide.
 | [Egress](docs/egress.md) | Proxy model, policy syntax, lifecycle and verification |
 | [MCP integration](docs/mcp.md) | server-mcp contract, tokens, Compose and troubleshooting |
 | [Development](docs/development.md) | Repository layout, CI, lint rules and self-tests |
+| [Roadmap](docs/roadmap.md) | Prioritized open work, decisions and cross-repo dependencies |
+
+Open work is tracked only in the [roadmap](docs/roadmap.md). Review snapshots in
+[`docs/reviews/`](docs/reviews/README.md) are provenance, not a second backlog.
 
 ## License
 

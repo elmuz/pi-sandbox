@@ -23,10 +23,23 @@ stop, restart or update the MCP containers.
   by the egress baseline. Add a public target to the egress deny list so the
   agent cannot bypass MCP; see [Egress](egress.md).
 
-A project opts in by containing `.pi/mcp.json` or `.pi/mcp.sandbox.json`. See
-`examples/mcp.json`. Project MCP detection requires a mounted workspace
-(`PI_SANDBOX_WORKSPACE_MODE=ro` or `rw`). With the default `none`, the launcher
-does not read the project MCP configuration or enable the control network.
+MCP is a host-controlled capability, disabled by default. Enabling it requires
+both:
+
+1. a host opt-in: `--mcp` or `PI_SANDBOX_MCP=1` in the trusted launcher config;
+2. a project config: `.pi/mcp.json` or `.pi/mcp.sandbox.json`.
+
+A project config alone does nothing. The host opt-in alone does nothing. This
+prevents an untrusted checkout from granting itself the control network or the
+token just by containing a file. `--no-mcp` is the per-launch override and wins
+over both. Project MCP detection also requires a mounted workspace
+(`PI_SANDBOX_WORKSPACE_MODE=ro` or `rw`); with the default `none`, the launcher
+does not read the project MCP configuration.
+
+The sandbox overlay is staged in a launcher-owned temporary directory with mode
+0700/0600 before it is mounted. The launcher canonicalizes the workspace and the
+candidate config, requires a regular file, and refuses a symlink that resolves
+outside the workspace. A symlink that stays inside the workspace is allowed.
 
 For an opted-in project, the launcher creates the control network with
 `--internal` if it does not exist. If the network exists but no MCP container is
@@ -43,11 +56,10 @@ MCP configurations:
 - `.pi/mcp.sandbox.json` is the container configuration: internal hostnames,
   `MCP_TOKEN` and no host ports.
 
-When `.pi/mcp.sandbox.json` exists, the launcher uses it for the MCP contract
-and mounts it read-only over the project's `.pi/mcp.json` inside the container.
-The host file is not modified, and the sandbox never sees the host development
-entry points. If the sandbox file is absent, the launcher keeps the previous
-behaviour and uses `.pi/mcp.json` directly.
+When `.pi/mcp.sandbox.json` exists, the launcher stages it and mounts the staged
+copy read-only over the project's `.pi/mcp.json` inside the container. The host
+file is not modified, and the sandbox never sees the host development entry
+points. If the sandbox file is absent, the launcher uses `.pi/mcp.json` directly.
 
 The overlay keeps one project checkout usable in both modes:
 
@@ -81,15 +93,25 @@ install -m 600 ~/.config/server-mcp/secrets/http-token \
 # Print the final podman command; MCP_TOKEN is shown without its value.
 pi-sandbox --dry-run
 
-# Import a token, then launch.
-pi-sandbox --mcp-token-file ~/.config/server-mcp/secrets/http-token
+# Enable MCP for this launch (still requires a project config).
+pi-sandbox --mcp
 
-# Skip the control network and token for this launch only.
+# Import a token, then launch with MCP enabled.
+pi-sandbox --mcp --mcp-token-file ~/.config/server-mcp/secrets/http-token
+
+# Skip the control network and token for this launch only; wins over --mcp.
 pi-sandbox --no-mcp
 ```
 
 `PI_SANDBOX_ALLOW_NO_MCP_TOKEN=1` is a diagnostic escape hatch for launching
-with an MCP config but no token. It is not intended for normal use.
+with MCP enabled but no token. It is not intended for normal use.
+
+To make MCP opt-in persistent for a trusted host, put this in
+`~/.config/pi-sandbox/config`:
+
+```bash
+PI_SANDBOX_MCP=1
+```
 
 ## Rotating the token
 

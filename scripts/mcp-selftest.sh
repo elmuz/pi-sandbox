@@ -44,6 +44,7 @@ run_launcher() {
     TMPDIR="$TMP_ROOT" \
     PI_SANDBOX_STATE="$TEST_STATE" \
     PI_SANDBOX_MCP_NETWORK="$TEST_NETWORK" \
+    PI_SANDBOX_MCP="${MCP_OPT_IN:-0}" \
     PI_SANDBOX_WORKSPACE_MODE="${WORKSPACE_MODE:-rw}" \
     PI_SANDBOX_WARN=0 \
     PI_VERSION=selftest \
@@ -76,7 +77,7 @@ write_project_config
 write_token
 stdout="$TMP_ROOT/stdout.1"
 stderr="$TMP_ROOT/stderr.1"
-run_launcher --dry-run > "$stdout" 2> "$stderr" || fail "valid token dry-run exited non-zero"
+MCP_OPT_IN=1 run_launcher --dry-run > "$stdout" 2> "$stderr" || fail "valid token dry-run exited non-zero"
 
 grep -Fq -- "--network $TEST_NETWORK" "$stdout" \
   || fail "dry-run is missing --network $TEST_NETWORK"
@@ -94,11 +95,13 @@ pass "valid token: one internal network and redacted MCP_TOKEN"
 write_sandbox_config
 stdout="$TMP_ROOT/stdout.1b"
 stderr="$TMP_ROOT/stderr.1b"
-run_launcher --dry-run > "$stdout" 2> "$stderr" \
+MCP_OPT_IN=1 run_launcher --dry-run > "$stdout" 2> "$stderr" \
   || fail "sandbox-config dry-run exited non-zero"
 
+grep -Fq -- "src=$TMP_ROOT/pi-sandbox-mcp." "$stdout" \
+  || fail "dry-run does not mount a staged sandbox MCP config"
 grep -Fq -- "src=$TEST_PROJECT/.pi/mcp.sandbox.json" "$stdout" \
-  || fail "dry-run does not mount the sandbox MCP config"
+  && fail "dry-run mounts the repository-controlled sandbox config directly"
 grep -Fq -- 'dst=/workspace/.pi/mcp.json' "$stdout" \
   || fail "sandbox MCP config is not mounted over .pi/mcp.json"
 grep -Fq -- "--network $TEST_NETWORK" "$stdout" \
@@ -109,7 +112,7 @@ pass "sandbox MCP config is overlaid on .pi/mcp.json"
 rm -f "$TEST_PROJECT/.pi/mcp.sandbox.json"
 stdout="$TMP_ROOT/stdout.1c"
 stderr="$TMP_ROOT/stderr.1c"
-WORKSPACE_MODE=none run_launcher --dry-run > "$stdout" 2> "$stderr" \
+WORKSPACE_MODE=none MCP_OPT_IN=1 run_launcher --dry-run > "$stdout" 2> "$stderr" \
   || fail "unmounted-workspace dry-run exited non-zero"
 grep -Fq -- "--network $TEST_NETWORK" "$stdout" \
   && fail "unmounted workspace still enables the control network"
@@ -117,12 +120,83 @@ grep -Fq -- '--env MCP_TOKEN' "$stdout" \
   && fail "unmounted workspace still exports MCP_TOKEN"
 pass "unmounted workspace ignores project MCP config"
 
+# 1d. A project config without the host opt-in gets neither network nor token.
+write_project_config
+write_token
+stdout="$TMP_ROOT/stdout.1d"
+stderr="$TMP_ROOT/stderr.1d"
+run_launcher --dry-run > "$stdout" 2> "$stderr" \
+  || fail "host-opt-in-off dry-run exited non-zero"
+grep -Fq -- "--network $TEST_NETWORK" "$stdout" \
+  && fail "project config enabled MCP without host opt-in"
+grep -Fq -- '--env MCP_TOKEN' "$stdout" \
+  && fail "project config exported MCP_TOKEN without host opt-in"
+pass "project config alone does not enable MCP"
+
+# 1e. Host opt-in without a project config does nothing.
+rm -rf "$TEST_PROJECT/.pi"
+stdout="$TMP_ROOT/stdout.1e"
+stderr="$TMP_ROOT/stderr.1e"
+MCP_OPT_IN=1 run_launcher --dry-run > "$stdout" 2> "$stderr" \
+  || fail "host-opt-in-only dry-run exited non-zero"
+grep -Fq -- "--network $TEST_NETWORK" "$stdout" \
+  && fail "host opt-in without project config enabled the control network"
+grep -Fq -- '--env MCP_TOKEN' "$stdout" \
+  && fail "host opt-in without project config exported MCP_TOKEN"
+pass "host opt-in without project config does nothing"
+
+# 1f. --no-mcp wins over the host opt-in and a project config.
+write_project_config
+stdout="$TMP_ROOT/stdout.1f"
+stderr="$TMP_ROOT/stderr.1f"
+MCP_OPT_IN=1 run_launcher --no-mcp --dry-run > "$stdout" 2> "$stderr" \
+  || fail "--no-mcp dry-run exited non-zero"
+grep -Fq -- "--network $TEST_NETWORK" "$stdout" \
+  && fail "--no-mcp did not override the host opt-in"
+grep -Fq -- '--env MCP_TOKEN' "$stdout" \
+  && fail "--no-mcp still exported MCP_TOKEN"
+pass "--no-mcp wins over host opt-in and project config"
+
+# 1g. A sandbox overlay symlink that escapes the workspace is refused before
+# podman run, and the target contents never appear in the output.
+outside="$TMP_ROOT/outside-secret.json"
+printf '{"secret":"outside-do-not-print"}\n' > "$outside"
+rm -f "$TEST_PROJECT/.pi/mcp.sandbox.json"
+ln -s "$outside" "$TEST_PROJECT/.pi/mcp.sandbox.json"
+stdout="$TMP_ROOT/stdout.1g"
+stderr="$TMP_ROOT/stderr.1g"
+set +e
+MCP_OPT_IN=1 run_launcher --dry-run > "$stdout" 2> "$stderr"
+status=$?
+set -e
+[[ "$status" -eq 2 ]] || fail "escaping overlay symlink exited $status, expected 2"
+grep -Fq 'outside the workspace' "$stderr" \
+  || fail "escaping overlay symlink error does not name the boundary"
+grep -Fq 'outside-do-not-print' "$stdout" "$stderr" \
+  && fail "escaping overlay symlink leaked the target contents"
+pass "escaping overlay symlink is refused without leaking contents"
+
+# 1h. A symlink that stays inside the workspace is allowed and still staged.
+inside="$TEST_PROJECT/.pi/inside-mcp.json"
+printf '{"mcpServers":{"inside":{}}}\n' > "$inside"
+rm -f "$TEST_PROJECT/.pi/mcp.sandbox.json"
+ln -s "$inside" "$TEST_PROJECT/.pi/mcp.sandbox.json"
+stdout="$TMP_ROOT/stdout.1h"
+stderr="$TMP_ROOT/stderr.1h"
+MCP_OPT_IN=1 run_launcher --dry-run > "$stdout" 2> "$stderr" \
+  || fail "inside-workspace overlay symlink dry-run exited non-zero"
+grep -Fq -- "src=$TMP_ROOT/pi-sandbox-mcp." "$stdout" \
+  || fail "inside-workspace overlay symlink was not staged"
+grep -Fq -- "src=$TEST_PROJECT/.pi/mcp.sandbox.json" "$stdout" \
+  && fail "inside-workspace overlay symlink was mounted directly"
+pass "inside-workspace overlay symlink is allowed and staged"
+
 # 2. A group/other-readable token is refused.
 chmod 644 "$TEST_TOKEN"
 stdout="$TMP_ROOT/stdout.2"
 stderr="$TMP_ROOT/stderr.2"
 set +e
-run_launcher --dry-run > "$stdout" 2> "$stderr"
+MCP_OPT_IN=1 run_launcher --dry-run > "$stdout" 2> "$stderr"
 status=$?
 set -e
 [[ "$status" -eq 2 ]] || fail "0644 token exited $status, expected 2"
@@ -135,7 +209,7 @@ rm -f "$TEST_TOKEN"
 stdout="$TMP_ROOT/stdout.3"
 stderr="$TMP_ROOT/stderr.3"
 set +e
-run_launcher --dry-run > "$stdout" 2> "$stderr"
+MCP_OPT_IN=1 run_launcher --dry-run > "$stdout" 2> "$stderr"
 status=$?
 set -e
 [[ "$status" -eq 2 ]] || fail "missing token exited $status, expected 2"
@@ -147,7 +221,7 @@ pass "missing token fails closed with a fix command"
 rm -rf "$TEST_PROJECT/.pi"
 stdout="$TMP_ROOT/stdout.4"
 stderr="$TMP_ROOT/stderr.4"
-run_launcher --dry-run > "$stdout" 2> "$stderr" || fail "no-config dry-run exited non-zero"
+MCP_OPT_IN=1 run_launcher --dry-run > "$stdout" 2> "$stderr" || fail "no-config dry-run exited non-zero"
 
 grep -Fq -- "--network $TEST_NETWORK" "$stdout" \
   && fail "no-config dry-run contains the control network flag"
@@ -279,9 +353,9 @@ TEST_PATH="$FAKE_BIN:$PATH"
 export TEST_PATH
 
 : > "$FAKE_PODMAN_LOG"
-run_launcher > "$TMP_ROOT/stdout.5a" 2> "$TMP_ROOT/stderr.5a" \
+MCP_OPT_IN=1 run_launcher > "$TMP_ROOT/stdout.5a" 2> "$TMP_ROOT/stderr.5a" \
   || fail "first fake launch exited non-zero"
-run_launcher > "$TMP_ROOT/stdout.5b" 2> "$TMP_ROOT/stderr.5b" \
+MCP_OPT_IN=1 run_launcher > "$TMP_ROOT/stdout.5b" 2> "$TMP_ROOT/stderr.5b" \
   || fail "second fake launch exited non-zero"
 
 create_count="$(grep -c -- "^network create --internal $TEST_NETWORK$" "$FAKE_PODMAN_LOG" || true)"

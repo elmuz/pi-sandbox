@@ -64,7 +64,7 @@ Everything that widens the sandbox is off unless explicitly enabled:
 | Wayland clipboard | Disabled | `PI_SANDBOX_CLIPBOARD=1` or `--clipboard` |
 | GitHub CLI token | Disabled | `PI_SANDBOX_GH_TOKEN=1` or `--gh-token` |
 | Host GPG signing | Disabled | `PI_SANDBOX_GPG_SIGN=1` or `--gpg-sign` |
-| MCP network | Disabled | Mounted workspace with MCP config and token |
+| MCP network | Disabled | Host opt-in + workspace config and token |
 
 Provider auth seeding is the exception: Pi needs credentials to work, so the
 read-only auth seed is always copied into the per-container tmpfs.
@@ -157,11 +157,12 @@ If a read-write mount is outside your threat model:
   `pre-commit` against a sandbox-written checkout, review tracked, untracked and
   ignored files, `.git/config`, `.git/hooks` and executable bits.
 
-This limitation also applies to MCP configuration. The sandbox MCP config
-overlay in [MCP integration](mcp.md) prevents a trivial file swap, but it is not
-a security boundary. The agent has a shell and the MCP token, so it can call the
-MCP server directly or run a nested Pi with its own config. The MCP server's own
-policy is the enforcement point.
+This limitation also applies to MCP configuration. MCP is off unless the host
+opts in, and the sandbox overlay is staged outside the workspace so a
+repository-controlled symlink cannot become a mount source. That is not a
+security boundary: the agent has a shell and, once MCP is enabled, the token, so
+it can call the MCP server directly or run a nested Pi with its own config. The
+MCP server's own policy is the enforcement point.
 
 ## Credentials
 

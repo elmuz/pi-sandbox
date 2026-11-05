@@ -16,6 +16,7 @@ run, then use the other guides as needed.
 | [Egress](egress.md) | Proxy model, policy syntax, lifecycle and verification |
 | [MCP integration](mcp.md) | server-mcp contract, tokens, Compose and troubleshooting |
 | [Development](development.md) | Repository layout, CI, lint rules and self-tests |
+| [Roadmap](roadmap.md) | Prioritized open work, decisions and cross-repo dependencies |
 
 ## Quick links
 
@@ -26,6 +27,10 @@ run, then use the other guides as needed.
 - [Configure egress policy](egress.md)
 - [Configure MCP access](mcp.md)
 - [Review the security model](security.md)
+- [See the open work](roadmap.md)
 - [Run the test suite](development.md#tests)
+
+Point-in-time review records live in [`reviews/`](reviews/README.md). They are provenance,
+not a second backlog; accepted findings are tracked in the [roadmap](roadmap.md).
 
 The project overview and quick start are in the [README](../README.md).
