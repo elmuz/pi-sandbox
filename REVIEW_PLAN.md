@@ -1,0 +1,190 @@
+# Review remediation plan
+
+This is an implementation handoff for the static-review findings. It records
+the problems, triggering conditions, impact, suggested changes and acceptance
+checks; it does not implement any changes. Paths and line references identify
+the code inspected during the review and may shift as work proceeds.
+
+## 1. Prevent MCP config mounts from escaping the workspace
+
+**Priority: High**
+
+**Affected code:** `bin/pi-sandbox`, MCP config detection around lines 791-796
+and overlay mount around lines 999-1002.
+
+The launcher tests `.pi/mcp.sandbox.json` with `[[ -f ... ]]`, which follows
+symlinks, then passes that path directly as the host-side `src` of a Podman
+bind mount to the container's `.pi/mcp.json`. A checkout can therefore contain
+`.pi/mcp.sandbox.json` as a symlink to a host file outside the checkout, such
+as `$HOME/.pi/agent/auth.json` or
+`$PI_SANDBOX_STATE/secrets/gh_token`. If Podman resolves the bind source to
+that target, the container can read the target at the MCP config path. This
+can happen in `ro` mode too; a read-only workspace mount does not protect
+confidentiality.
+
+**Suggested change:** Canonicalize the workspace and candidate config source
+before mounting, and require the source to be a regular file whose resolved
+path is inside the canonical workspace. Prefer staging the config into a
+launcher-owned temporary directory with restrictive permissions, then mount
+the staged file; this avoids depending on a repository-controlled symlink as
+a mount source. Fail closed with an error naming the config path if validation
+fails. Do not print file contents.
+
+**Acceptance checks:**
+
+- An ordinary config file inside the workspace still overlays
+  `.pi/mcp.json` as before.
+- A config symlink to a file outside the workspace is rejected before
+  `podman run`; a fake-Podman test confirms no outside source is included in
+  the mount arguments. A focused container test with a dummy secret confirms
+  the container cannot read that target. The secret value must not appear in
+  error output or dry-run output.
+- A symlink whose target remains inside the workspace behaves according to
+  the chosen policy (allow it only if canonical-path checks are deliberate).
+- Test the mount-source behavior with Podman or a narrowly scoped test double;
+  do not infer confinement from the workspace bind mount.
+
+## 2. Require host-side consent before enabling MCP
+
+**Priority: High**
+
+**Affected code:** `bin/pi-sandbox`, project-file detection around lines
+791-796, and network/token setup around lines 1005-1013; `docs/mcp.md`.
+
+When a mounted workspace contains either `.pi/mcp.sandbox.json` or
+`.pi/mcp.json`, the launcher enables MCP automatically. If the host token file
+exists, it exports the bearer token as `MCP_TOKEN` and attaches the container
+to the control network. A repository can therefore trigger a privileged
+capability merely by including MCP config. This is especially surprising for
+`ro`, a mode users may choose to inspect an untrusted repository. The startup
+warning is useful but does not require the user to consent before the secret
+and network are made available. Once enabled, any process in the container can
+read the token from its environment; this is intentional for an MCP-enabled
+session, but should not be controlled solely by repository contents.
+
+**Suggested change:** Add an explicit host-controlled opt-in, such as
+`--mcp` and/or `PI_SANDBOX_MCP=1` in the trusted launcher config, defaulting to
+off. Keep project config as the source of MCP server definitions, but require
+both host opt-in and a project config before attaching the control network or
+exporting `MCP_TOKEN`. Preserve `--no-mcp` as a per-launch override with
+precedence over the enable setting. Update startup warnings and `docs/mcp.md`
+to explain the new two-part opt-in and migration from the current
+file-presence behavior.
+
+**Acceptance checks:**
+
+- A mounted project with MCP config but no host opt-in gets neither the MCP
+  network nor `MCP_TOKEN`, and dry-run output confirms that.
+- Explicit host opt-in plus a project config enables the network and exports
+  the token without printing its value.
+- Explicit host opt-in without project config does not attach the MCP network
+  or pass the token.
+- `--no-mcp` disables MCP even when the host opt-in and project config are
+  present.
+- Extend `scripts/mcp-selftest.sh` to cover these cases and retain tests for
+  missing, invalid-mode and valid token files.
+
+## 3. Protect sensitive workspace path trees, not only exact paths
+
+**Priority: Medium**
+
+**Affected code:** `bin/pi-sandbox`, workspace guard around lines 724-729.
+
+The guard compares the canonical workspace against exact strings for `/`,
+`$HOME/.ssh`, `$HOME/.pi` and `$STATE_DIR`. It does not reject a descendant.
+For example, `--workspace "$HOME/.pi/agent"` with workspace mode `ro` or `rw`
+can expose Pi auth/config state; `--workspace "$PI_SANDBOX_STATE/auth"` can
+expose provider credentials. `rw` additionally permits persistent tampering.
+The check also compares `$STATE_DIR` as configured rather than ensuring it is
+canonical, so a custom relative or symlinked state path may not compare as
+expected.
+
+**Suggested change:** Canonicalize protected roots as well as the workspace.
+Use path-component-aware comparisons (not raw string prefixes) to reject
+overlap in either direction: the workspace is equal to, inside, or an ancestor
+of a protected root. This also avoids allowing a workspace such as
+`$HOME/.local/share` that contains the state directory. Preserve the existing
+scratch behavior for `$HOME` and `/`, and do not reject unrelated siblings
+such as `$HOME/.pi-backup`.
+
+**Acceptance checks:**
+
+- Reject exact protected paths, descendants such as `.pi/agent` and `state/auth`,
+  and workspace ancestors that would include a protected root.
+- Reject paths that resolve into a protected root through symlinks.
+- Allow similarly prefixed but unrelated paths.
+- Verify the behavior for absent state directories and custom
+  `PI_SANDBOX_STATE` paths without changing the existing scratch-workspace
+  behavior.
+
+## 4. Make the MCP example's authentication contract usable
+
+**Priority: Medium**
+
+**Affected code:** `examples/mcp.json` lines 24 and 31, plus `docs/mcp.md`.
+
+The example tells users to save it as `.pi/mcp.sandbox.json`, but both
+`Authorization` values are the literal string `******`. The launcher exports
+`MCP_TOKEN`, but nothing in this JSON explicitly references that variable.
+Unless the Pi MCP client supports a particular environment-variable expansion
+syntax, copying the example sends an invalid authorization value and is likely
+to fail with `401 Unauthorized`. The placeholder also leaves unclear whether
+users are expected to paste the real secret into a project file.
+
+**Suggested change:** Verify the MCP client's documented config semantics
+before choosing a value. If it supports environment interpolation, use that
+exact supported syntax to form the expected bearer header from `MCP_TOKEN`.
+If it does not, document a safe alternative that does not require committing
+or storing the secret in the repository. Add a clear note distinguishing a
+redacted placeholder from a copy-ready example. Never put a real token in the
+example.
+
+**Acceptance checks:**
+
+- The example is valid JSON and follows the client-supported auth convention.
+- With a dummy token and a local fake MCP endpoint, a config/client check
+  confirms the endpoint receives the expected bearer header.
+- Documentation says exactly what users must configure and does not imply
+  that the literal `******` works.
+
+## 5. Decide whether concurrent sessions share a trust boundary
+
+**Priority: Design decision**
+
+**Affected code:** `bin/pi-sandbox` egress network setup around lines 252-276
+and sandbox network selection around line 866; `docs/egress.md` and
+`docs/security.md`.
+
+Every Pi container attaches to the same internal `pi-egress` network. The
+network has no public route, but it is still a shared container network:
+containers on it can initiate connections to peer container addresses. For
+example, session A can start a service listening on its container interface;
+an untrusted session B may be able to connect to it. The egress proxy's policy
+controls destinations reached through the proxy, not peer-to-peer traffic on
+the bridge.
+
+**Decision and possible resolution:** Establish whether concurrently running
+sandboxes are expected to be mutually trusted. If not, design per-session
+internal networks while preserving proxy access. Account for creating and
+cleaning up those networks, attaching/detaching the shared proxy, concurrent
+launch races, stale sessions and proxy availability. Do not assume that a
+shared proxy or the `--internal` network property prevents lateral traffic.
+If per-session isolation is out of scope, document explicitly that the shared
+bridge is not a boundary between sandbox sessions.
+
+**Acceptance checks if isolated:** Start two sandbox containers, have one
+listen on its container interface, and verify the other cannot connect; also
+verify both can reach the proxy and that direct public/LAN routes remain
+unavailable. Include cleanup checks for normal exit and interrupted launch.
+
+**Acceptance checks if not isolated:** Add a clear limitation to the security
+and egress docs, including the peer-service scenario and guidance not to run
+mutually untrusted sessions concurrently on the shared bridge.
+
+## Suggested execution order
+
+1. Confine the MCP overlay mount source and add regression coverage.
+2. Make MCP access host-opt-in; update the self-test and migration docs.
+3. Close sensitive-path descendant/ancestor checks.
+4. Verify the MCP client's auth configuration and correct the example.
+5. Resolve and implement the concurrent-session network trust decision.
