@@ -88,6 +88,8 @@ grep -Fq -- "$SECRET" "$stdout" "$stderr" \
 
 control_count="$(grep -o -- "--network $TEST_NETWORK" "$stdout" | wc -l)"
 [[ "$control_count" -eq 1 ]] || fail "dry-run has $control_count control network flags, expected 1"
+grep -Fq -- '--network mcp-egress' "$stdout" \
+  && fail "dry-run attached the sandbox to mcp-egress"
 pass "valid token: one internal network and redacted MCP_TOKEN"
 
 # 1b. A sandbox-specific config wins and is mounted over .pi/mcp.json inside
