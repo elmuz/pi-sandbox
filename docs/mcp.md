@@ -46,6 +46,21 @@ For an opted-in project, the launcher creates the control network with
 attached, it prints a hint and continues; start the server-mcp stack separately
 with systemd.
 
+## Client header expansion
+
+Pi expands `${NAME}` in `headers` and `env` values from the environment. The
+example uses `"Authorization": "Bearer ${MCP_TOKEN}"`; the launcher exports
+`MCP_TOKEN` into the container, so Pi sends the bearer header without the token
+appearing in the config file or the podman argv.
+
+If `MCP_TOKEN` is unset, Pi refuses to connect and reports
+`Failed to resolve MCP server ... from environment variable: MCP_TOKEN`. It does
+not send the literal `${MCP_TOKEN}` text. The example is a template, not a
+copy-ready token value; never commit a real token.
+
+The server side of this contract is in server-mcp's
+[container token documentation](https://github.com/elmuz/server-mcp/blob/main/docs/container.md#token).
+
 ## Host and sandbox configs
 
 A repository that is also developed directly on the host needs two different

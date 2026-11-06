@@ -367,4 +367,8 @@ grep -Fq -- "$SECRET" "$FAKE_PODMAN_LOG" \
   && fail "token value appeared in the podman argv"
 pass "internal control network creation is idempotent and token-free"
 
+# 6. The example's header expansion matches the Pi client contract. The live
+# check is skipped when pi or python3 is unavailable.
+"$REPO_DIR/scripts/mcp-auth-test.sh"
+
 echo "All MCP contract self-tests passed."

@@ -15,6 +15,10 @@
 #
 # It must be a single-line file with mode 0600 or 0400. The launcher exports it
 # as MCP_TOKEN and never places the value in the podman argv.
+#
+# Pi expands ${MCP_TOKEN} in header values from the environment. If the variable
+# is missing, Pi refuses to connect instead of sending the literal text. This
+# file is a template: never put a real token in it.
 
 {
   "mcpServers": {

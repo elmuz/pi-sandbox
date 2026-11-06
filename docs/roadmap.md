@@ -25,10 +25,9 @@ Completed items stay here as history; the table lists only open work.
 | ID | Pri | Item | Pairs with |
 | --- | --- | --- | --- |
 | PS-6 | P1 | Disposable workspace | server-mcp 3.8/3b |
-| PS-4 | P1 | Verify MCP client auth contract | server-mcp MCP docs |
 
-Recommended order: PS-1, PS-2, PS-3, PS-5 and PS-7 are done; next is PS-6,
-then PS-4.
+Recommended order: PS-1, PS-2, PS-3, PS-4, PS-5 and PS-7 are done; next is
+PS-6.
 
 ### PS-1 P0 — confine the MCP config overlay mount source
 
@@ -155,19 +154,25 @@ then PS-4.
 
 ### PS-4 P1 — verify and document the MCP client auth contract
 
-- [ ] **Problem.** The review's claim that `examples/mcp.json` contains a
-  literal `******` is stale: the current file uses
-  `"Authorization": "Bearer ${MCP_TOKEN}"`. The real open question is whether
-  the Pi MCP client expands `${MCP_TOKEN}` in `headers` at all. If it does not,
-  copying the example sends the literal text and the MCP returns 401. The
-  contract is shared with server-mcp's MCP documentation.
-- [ ] **Change.** Verify the client's documented behavior. If interpolation is
-  supported, state the exact syntax and add a check that a dummy token produces
-  the expected bearer header against a fake endpoint. If it is not, document a
-  safe alternative that does not store the secret in the repository, and make
-  clear that the example is a template, not a copy-ready token value. Never put
-  a real token in the example.
-- [ ] **Acceptance.** The example is valid JSON and follows the supported
+- [x] **Done (2026-11-07).** Pi expands `${NAME}` in `headers` and `env`
+  values from the environment. `examples/mcp.json` uses
+  `"Authorization": "Bearer ${MCP_TOKEN}"`, and `docs/mcp.md` documents the
+  syntax, the missing-variable failure and the server-side cross-link.
+  `scripts/mcp-auth-test.sh` starts a fake endpoint and checks that a dummy
+  token becomes the bearer header and that an unset `MCP_TOKEN` fails closed
+  without sending a request. The check is wired into `scripts/mcp-selftest.sh`
+  and skips when `pi` or `python3` is unavailable.
+- [x] **Problem.** The review's claim that `examples/mcp.json` contains a
+  literal `******` was stale: the file already used
+  `"Authorization": "Bearer ${MCP_TOKEN}"`. The real open question was whether
+  the Pi MCP client expands `${MCP_TOKEN}` in `headers` at all. If it did not,
+  copying the example would send the literal text and the MCP would return 401.
+  The contract is shared with server-mcp's MCP documentation.
+- [x] **Change.** Verified the client's documented behavior. Interpolation is
+  supported; the exact syntax and the missing-variable behavior are documented,
+  and a fake-endpoint check confirms the header. The example is explicitly a
+  template, not a copy-ready token value.
+- [x] **Acceptance.** The example is valid JSON and follows the supported
   convention; a fake-endpoint check confirms the header; `docs/mcp.md` and the
   server-mcp contract agree on who injects the token and in what form.
 
@@ -216,6 +221,8 @@ Keep these here so closed debates are not reopened as new findings.
   exact paths, descendants and ancestors, while keeping the scratch behavior.
 - [x] PS-5: the shared `pi-egress` and `pi-control` bridges are not a boundary
   between sessions; the limitation and operational guidance are documented.
+- [x] PS-4: Pi expands `${MCP_TOKEN}` in MCP headers; the example, docs and
+  fake-endpoint check agree with the server-mcp bearer contract.
 - [x] PS-7: the isolation and MCP self-tests run in `scripts/lint.sh
   --with-tests` and CI, including the new guard and live boundary cases.
 - [x] Egress proxy parity: the pi-sandbox proxy matches the server-mcp relay

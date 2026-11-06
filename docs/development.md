@@ -24,6 +24,7 @@ pi-sandbox/
 ├── .githooks/pre-push             runs the linters before every push
 ├── scripts/isolation-test.sh      static and live isolation checks
 ├── scripts/lint.sh                shared lint entrypoint for CI and local use
+├── scripts/mcp-auth-test.sh       Pi header-expansion contract check
 ├── scripts/mcp-selftest.sh        contract checks without an MCP stack
 ├── install.sh                     creates state dirs and symlinks the launcher
 ├── LICENSE                        MIT license
@@ -87,8 +88,9 @@ scripts/mcp-selftest.sh
 ```
 
 It checks token validation, fail-closed behaviour for opted-in projects, the
-absence of a token in the podman argv, and idempotent creation of the internal
-control network.
+absence of a token in the podman argv, idempotent creation of the internal
+control network, and the Pi header-expansion contract. The header check starts
+a fake MCP endpoint and is skipped when `pi` or `python3` is unavailable.
 
 The isolation self-test has two modes:
 
