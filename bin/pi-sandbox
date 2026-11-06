@@ -849,12 +849,25 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-case "$workspace" in
-  /|"$home_dir/.ssh"|"$home_dir/.pi"|"$STATE_DIR")
-    echo "Refusing to mount sensitive path read-write: $workspace" >&2
+# Reject a workspace that is, contains, or is contained by a protected root.
+# The roots are canonicalized so a symlinked state directory or home subtree
+# cannot slip past a string comparison. `/` and `$HOME` are handled by the
+# scratch substitution above, so they are not roots here.
+canonical_path() {
+  realpath -m -- "$1" 2>/dev/null || printf '%s\n' "$1"
+}
+
+protected_roots=(
+  "$(canonical_path "$home_dir/.ssh")"
+  "$(canonical_path "$home_dir/.pi")"
+  "$(canonical_path "$STATE_DIR")"
+)
+for root in "${protected_roots[@]}"; do
+  if [[ "$workspace" == "$root" || "$workspace" == "$root"/* || "$root" == "$workspace"/* ]]; then
+    echo "Refusing to mount a sensitive path: $workspace overlaps $root" >&2
     exit 2
-    ;;
-esac
+  fi
+done
 
 if [[ -n "$scratch_workspace_dir" ]]; then
   project_name="scratch"
