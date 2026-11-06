@@ -48,6 +48,15 @@ class PolicyError(ValueError):
     """The policy file is malformed."""
 
 
+class ClientDisconnectedError(Exception):
+    """The client closed the connection before sending a request.
+
+    Container healthchecks probe the proxy by opening a TCP connection and
+    closing it immediately. That is a successful liveness check, not a bad
+    request, so it must not be logged as a warning.
+    """
+
+
 @dataclass(frozen=True)
 class ResolvedAddress:
     """One validated destination address."""
@@ -298,7 +307,6 @@ class Policy:
 
         if literal_ip is not None:
             addresses = (_address_from_ip(literal_ip, port),)
-            decision_host = host
         else:
             try:
                 addresses = self._resolver(host, port)
@@ -306,7 +314,6 @@ class Policy:
                 return Decision(False, "DNS resolution failed", host, port)
             if not addresses:
                 return Decision(False, "DNS resolution returned no addresses", host, port)
-            decision_host = host
 
         explicit_allowed = name_allowed
         for address in addresses:
@@ -382,15 +389,25 @@ def _connect(addresses: Sequence[ResolvedAddress]) -> socket.socket | None:
 
 def _relay(client: socket.socket, upstream: socket.socket) -> None:
     peers = {client: upstream, upstream: client}
+    open_socks = {client, upstream}
     try:
-        while True:
-            readable, _, _ = select.select([client, upstream], [], [], 60)
+        while open_socks:
+            # SSH tunnels can be idle between tool calls; a short idle
+            # timeout would drop a healthy session.
+            readable, _, _ = select.select(list(open_socks), [], [], 3600)
             if not readable:
                 return
             for source in readable:
                 data = source.recv(65536)
                 if not data:
-                    return
+                    # Propagate a half-close instead of tearing down the
+                    # other direction. SSH and HTTP both rely on this.
+                    open_socks.discard(source)
+                    try:
+                        peers[source].shutdown(socket.SHUT_WR)
+                    except OSError:
+                        pass
+                    continue
                 peers[source].sendall(data)
     except OSError:
         return
@@ -412,6 +429,11 @@ class ProxyHandler(socketserver.BaseRequestHandler):
         try:
             request_line, headers, initial_body = self._read_request()
             self._dispatch(request_line, headers, initial_body)
+        except ClientDisconnectedError:
+            LOGGER.debug(
+                "client %s connected and closed without a request",
+                self.client_address[0],
+            )
         except (OSError, ValueError, UnicodeError) as exc:
             LOGGER.warning("bad request from %s: %s", self.client_address[0], exc)
             self._send_error(400, "Bad Request")
@@ -421,7 +443,9 @@ class ProxyHandler(socketserver.BaseRequestHandler):
         while b"\r\n\r\n" not in buffer and b"\n\n" not in buffer:
             chunk = self.request.recv(65536)
             if not chunk:
-                raise ValueError("empty request")
+                if not buffer:
+                    raise ClientDisconnectedError
+                raise ValueError("incomplete request")
             buffer += chunk
             if len(buffer) > 131072:
                 raise ValueError("request headers too large")

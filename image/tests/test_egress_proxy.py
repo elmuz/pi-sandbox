@@ -3,6 +3,7 @@ import ipaddress
 import socket
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -200,6 +201,65 @@ class PolicyTests(unittest.TestCase):
             parse_rule("allow host 99999", 1)
         with self.assertRaises(PolicyError):
             parse_rule("block host", 1)
+
+
+class RelayTests(unittest.TestCase):
+    def test_half_close_is_propagated(self):
+        client, proxy_client = socket.socketpair()
+        proxy_upstream, upstream = socket.socketpair()
+        thread = threading.Thread(
+            target=egress_proxy._relay,
+            args=(proxy_client, proxy_upstream),
+            daemon=True,
+        )
+        thread.start()
+        try:
+            client.sendall(b"hello")
+            self.assertEqual(upstream.recv(5), b"hello")
+
+            client.shutdown(socket.SHUT_WR)
+            self.assertEqual(upstream.recv(1), b"")
+
+            upstream.sendall(b"world")
+            self.assertEqual(client.recv(5), b"world")
+
+            upstream.shutdown(socket.SHUT_WR)
+            self.assertEqual(client.recv(1), b"")
+        finally:
+            for sock in (client, proxy_client, proxy_upstream, upstream):
+                sock.close()
+            thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
+
+
+class RequestTests(unittest.TestCase):
+    class FakeRequest:
+        def __init__(self, chunks):
+            self.chunks = list(chunks)
+
+        def recv(self, _size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+    def handler(self, chunks):
+        handler = object.__new__(egress_proxy.ProxyHandler)
+        handler.request = self.FakeRequest(chunks)
+        return handler
+
+    def test_empty_request_is_a_disconnect(self):
+        with self.assertRaises(egress_proxy.ClientDisconnectedError):
+            self.handler([b""])._read_request()
+
+    def test_incomplete_request_is_an_error(self):
+        with self.assertRaises(ValueError):
+            self.handler([b"GET / HTTP/1.1\r\n"])._read_request()
+
+    def test_valid_request_is_parsed(self):
+        line, headers, body = self.handler(
+            [b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\nbody"]
+        )._read_request()
+        self.assertEqual(line, "GET / HTTP/1.1")
+        self.assertEqual(headers, [("Host", "example.com")])
+        self.assertEqual(body, b"body")
 
 
 def load_rules_from_text(text):
