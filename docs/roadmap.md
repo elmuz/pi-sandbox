@@ -24,14 +24,11 @@ Completed items stay here as history; the table lists only open work.
 
 | ID | Pri | Item | Pairs with |
 | --- | --- | --- | --- |
-| PS-3 | P1 | Protect sensitive path trees | PS-1, PS-6 |
 | PS-6 | P1 | Disposable workspace | server-mcp 3.8/3b |
-| PS-5 | P1 | Concurrent-session boundary | server-mcp 3.8, R1 |
 | PS-4 | P1 | Verify MCP client auth contract | server-mcp MCP docs |
-| PS-7 | P2 | Keep isolation self-tests in CI | PS-1, PS-2, PS-3 |
 
-Recommended order: PS-1 and PS-2 are done; next are PS-3 and PS-6, then the
-PS-5 decision, then PS-4, with PS-7 growing alongside each change.
+Recommended order: PS-1, PS-2, PS-3, PS-5 and PS-7 are done; next is PS-6,
+then PS-4.
 
 ### PS-1 P0 — confine the MCP config overlay mount source
 
@@ -93,17 +90,22 @@ PS-5 decision, then PS-4, with PS-7 growing alongside each change.
 
 ### PS-3 P1 — protect sensitive path trees, not only exact paths
 
-- [ ] **Problem.** The workspace guard compares exact strings for `/`,
-  `$HOME/.ssh`, `$HOME/.pi` and `$STATE_DIR`. It does not reject descendants, so
-  `--workspace "$HOME/.pi/agent"` or `--workspace "$PI_SANDBOX_STATE/auth"` can
-  expose auth/config state (and `rw` allows persistent tampering). It also
-  compares `$STATE_DIR` as configured rather than canonical.
-- [ ] **Change.** Canonicalize the protected roots as well as the workspace, and
+- [x] **Done (2026-11-06).** The launcher canonicalizes `$HOME/.ssh`,
+  `$HOME/.pi` and `$STATE_DIR` with `realpath -m` and rejects a workspace that
+  is equal to, inside, or an ancestor of any of them. `$HOME` and `/` still use
+  the disposable scratch workspace. `scripts/isolation-test.sh` covers exact
+  paths, descendants, an unrelated sibling and the scratch case.
+- [x] **Problem.** The workspace guard compared exact strings for `/`,
+  `$HOME/.ssh`, `$HOME/.pi` and `$STATE_DIR`. It did not reject descendants, so
+  `--workspace "$HOME/.pi/agent"` or `--workspace "$PI_SANDBOX_STATE/auth"`
+  could expose auth/config state (and `rw` allows persistent tampering). It also
+  compared `$STATE_DIR` as configured rather than canonical.
+- [x] **Change.** Canonicalize the protected roots as well as the workspace, and
   use path-component comparisons to reject overlap in either direction:
   workspace equal to, inside, or an ancestor of a protected root. Keep the
   scratch behavior for `$HOME` and `/`; do not reject unrelated siblings such as
   `$HOME/.pi-backup`.
-- [ ] **Acceptance.** Reject exact protected paths, descendants (`.pi/agent`,
+- [x] **Acceptance.** Reject exact protected paths, descendants (`.pi/agent`,
   `state/auth`) and ancestors that contain a protected root, including paths
   that resolve into one via a symlink. Allow similarly prefixed unrelated paths.
   Cover an absent state directory and a custom `PI_SANDBOX_STATE`, and confirm
@@ -131,22 +133,25 @@ PS-5 decision, then PS-4, with PS-7 growing alongside each change.
 
 ### PS-5 P1 — decide the concurrent-session trust boundary
 
-- [ ] **Problem.** Every sandbox attaches to the same internal `pi-egress`
-  bridge. It has no public route, but containers on it can still initiate
-  connections to peer container addresses. The proxy policy controls proxied
-  destinations, not peer-to-peer bridge traffic. Session A could listen and an
-  untrusted session B could connect.
-- [ ] **Decision needed.** Are concurrently running sandboxes mutually trusted?
-  If yes, document the shared bridge as explicitly not a boundary, including the
-  peer-service scenario and guidance not to run mutually untrusted sessions
-  concurrently. If no, design per-session internal networks while preserving
-  proxy access, with cleanup for normal exit, interrupted launch and stale
-  sessions.
-- [ ] **Acceptance (if isolated).** Two sandboxes: one listens on its container
-  interface, the other cannot connect; both reach the proxy; direct public/LAN
-  routes stay unavailable; networks are cleaned up on exit and interrupt.
-  **Acceptance (if not isolated):** `docs/security.md` and `docs/egress.md`
-  state the limitation and the operational guidance.
+- [x] **Decided (2026-11-06): the shared bridge is not a boundary.** Every
+  sandbox attaches to the same internal `pi-egress` bridge, and MCP-enabled
+  sessions also share `pi-control`. Containers on either bridge can initiate
+  connections to peer container addresses; the proxy policy controls proxied
+  destinations, not peer-to-peer bridge traffic. The sandbox protects the host
+  and the MCP from the author, not two authors from each other. Both sessions
+  are untrusted by assumption and share no credentials, auth tmpfs or state
+  volume.
+- [x] **Documented.** `docs/security.md` has a `Concurrent sessions` section and
+  `docs/egress.md` has a `Peer sessions` note. They state the limitation, the
+  peer-service scenario and the operational guidance: do not run mutually
+  untrusted sessions concurrently, do not enable `--gh-token`, `--gpg-sign` or
+  MCP in a session that shares a bridge with an untrusted one, and bind
+  development servers to `127.0.0.1`.
+- [ ] **Revisit if** mutually untrusted concurrent sessions become a supported
+  workflow, or a session can hold a capability another must not reach. The
+  isolation design would need per-session internal networks, a per-session
+  proxy or a proxy attached to every session network, per-session MCP access,
+  and cleanup for normal exit, interrupted launch and stale sessions.
 
 ### PS-4 P1 — verify and document the MCP client auth contract
 
@@ -168,15 +173,19 @@ PS-5 decision, then PS-4, with PS-7 growing alongside each change.
 
 ### PS-7 P2 — keep isolation self-tests in CI
 
-- [ ] **Problem.** `scripts/isolation-test.sh` and `scripts/mcp-selftest.sh`
-  cover the current static contract, but the PS-1/PS-2/PS-3 regressions are only
+- [x] **Done (2026-11-06).** `scripts/lint.sh --with-tests` runs
+  `scripts/mcp-selftest.sh` and `scripts/isolation-test.sh`, and CI calls the
+  same entrypoint. The PS-3 guard cases and the live egress/MCP boundary probes
+  are part of those scripts; the live probes stay opt-in with `--live`.
+- [x] **Problem.** `scripts/isolation-test.sh` and `scripts/mcp-selftest.sh`
+  covered the static contract, but the PS-1/PS-2/PS-3 regressions were only
   testable through new fake-Podman and dry-run cases. A fix without a CI check
   drifts.
-- [ ] **Change.** Add each acceptance case to the existing scripts as the
+- [x] **Change.** Add each acceptance case to the existing scripts as the
   corresponding item lands, and keep them in `scripts/lint.sh --with-tests`.
   Prefer fake-Podman/dry-run assertions for CI; keep the live container checks
   opt-in and documented.
-- [ ] **Acceptance.** CI fails if the overlay source escapes the workspace, if
+- [x] **Acceptance.** CI fails if the overlay source escapes the workspace, if
   MCP is enabled without host consent, or if a protected path descendant is
   accepted.
 
@@ -203,6 +212,15 @@ Keep these here so closed debates are not reopened as new findings.
 - [x] PS-1: the MCP overlay is canonicalized, confined to the workspace and
   staged in a launcher-owned directory before it becomes a mount source.
 - [x] PS-2: MCP requires a host opt-in plus a project config; `--no-mcp` wins.
+- [x] PS-3: the workspace guard canonicalizes the protected roots and rejects
+  exact paths, descendants and ancestors, while keeping the scratch behavior.
+- [x] PS-5: the shared `pi-egress` and `pi-control` bridges are not a boundary
+  between sessions; the limitation and operational guidance are documented.
+- [x] PS-7: the isolation and MCP self-tests run in `scripts/lint.sh
+  --with-tests` and CI, including the new guard and live boundary cases.
+- [x] Egress proxy parity: the pi-sandbox proxy matches the server-mcp relay
+  behavior (half-close propagation, long idle timeout, healthcheck disconnect),
+  and the live self-test covers unlisted public and IPv6 destinations.
 
 ## Review snapshots
 

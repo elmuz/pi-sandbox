@@ -96,6 +96,34 @@ The proxy only covers proxy-aware tools. Raw sockets, SSH and tools that ignore
 the proxy variables have no internet. That is deliberate: it avoids a
 root-owned host firewall.
 
+## Concurrent sessions
+
+Every sandbox joins the shared internal `pi-egress` bridge. When MCP is
+enabled, it also joins the shared `pi-control` bridge. Neither bridge is a
+boundary between sandbox sessions: a container on either bridge can connect to
+a peer container's address and listening ports. The egress proxy policy
+controls proxied destinations, not peer-to-peer bridge traffic.
+
+This is a deliberate limitation, not a claim of session isolation. The sandbox
+protects the host and the MCP from the author; it does not separate two authors
+from each other. Both sessions are untrusted by assumption, and they share no
+credentials, auth tmpfs or state volume.
+
+Operational guidance:
+
+- Do not run mutually untrusted sessions concurrently on the same host. Use a
+  separate host or VM when you need that separation.
+- Do not enable `--gh-token`, `--gpg-sign` or MCP in a session that shares a
+  bridge with an untrusted session.
+- Bind development servers to `127.0.0.1` inside the container, not `0.0.0.0`,
+  so a peer cannot reach them.
+- Treat `pi-egress` and `pi-control` as a flat network among sessions.
+
+Per-session networks are a possible future change. They would require a
+per-session proxy or a proxy attached to every session network, plus
+per-session MCP access, cleanup and stale-network handling. That is not
+implemented.
+
 ## Workspace secret warning
 
 The launcher scans up to six levels of a mounted workspace for common secret

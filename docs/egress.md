@@ -39,6 +39,14 @@ The proxy resolves names on its public side, so the sandbox does not need
 external DNS. Tools that resolve names for a direct, non-proxied connection
 will fail.
 
+## Peer sessions
+
+The proxy policy controls destinations reached through the proxy. It does not
+control traffic between containers on the same bridge. All sandboxes share
+`pi-egress`, so one session can connect to another session's container address
+and listening ports. The shared bridge is not a boundary between sessions; see
+[Security](security.md#concurrent-sessions) for the operational guidance.
+
 ## Policy file
 
 The policy is host-owned and mounted read-only into the proxy:
