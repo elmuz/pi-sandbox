@@ -33,8 +33,8 @@ A project config alone does nothing. The host opt-in alone does nothing. This
 prevents an untrusted checkout from granting itself the control network or the
 token just by containing a file. `--no-mcp` is the per-launch override and wins
 over both. Project MCP detection also requires a mounted workspace
-(`PI_SANDBOX_WORKSPACE_MODE=ro` or `rw`); with the default `none`, the launcher
-does not read the project MCP configuration.
+(`PI_SANDBOX_WORKSPACE_MODE=ro`, `rw` or `ephemeral`); with the default `none`,
+the launcher does not read the project MCP configuration.
 
 The sandbox overlay is staged in a launcher-owned temporary directory with mode
 0700/0600 before it is mounted. The launcher canonicalizes the workspace and the

@@ -1,9 +1,9 @@
 # pi-sandbox documentation
 
 `pi-sandbox` runs the Pi coding agent in a rootless Podman container. The
-container gets no host workspace by default; a project mount (`ro` or `rw`) is
-opt-in. It gets a deliberately small set of host capabilities; everything else
-stays on the host.
+container gets no host workspace by default; a project mount (`ro`, `rw` or
+`ephemeral`) is opt-in. It gets a deliberately small set of host capabilities;
+everything else stays on the host.
 
 Start with [Getting started](getting-started.md) for installation and a first
 run, then use the other guides as needed.

@@ -82,6 +82,7 @@ run_launcher() {
     PI_SANDBOX_SECRET_SCAN=0 \
     PI_SANDBOX_WARN=0 \
     PI_SANDBOX_WORKSPACE_MODE="${WORKSPACE_MODE:-none}" \
+    PI_SANDBOX_WORKSPACE_DISCARD="${WORKSPACE_DISCARD:-0}" \
     PI_SANDBOX_CLIPBOARD="${CLIPBOARD_MODE:-0}" \
     PI_SANDBOX_GH_TOKEN="${GH_TOKEN_MODE:-0}" \
     PI_VERSION=isolation \
@@ -145,6 +146,21 @@ grep -Fq -- "src=$TEST_PROJECT,dst=/workspace" "$TMP_ROOT/dry-run-rw.normalized"
 grep -Fq -- "src=$TEST_PROJECT,dst=/workspace,ro" "$TMP_ROOT/dry-run-rw.normalized" \
   && fail "read-write workspace mount is read-only"
 pass "read-write workspace mount is opt-in"
+
+# Ephemeral mode must mount a launcher-owned copy, never the host checkout.
+WORKSPACE_MODE=ephemeral run_launcher --dry-run \
+  > "$TMP_ROOT/dry-run-ephemeral" 2> "$TMP_ROOT/dry-run-ephemeral.err" \
+  || fail "ephemeral workspace dry-run exited non-zero"
+sed 's/\\//g' "$TMP_ROOT/dry-run-ephemeral" > "$TMP_ROOT/dry-run-ephemeral.normalized"
+grep -Fq -- "src=$TEST_STATE/workspaces/" "$TMP_ROOT/dry-run-ephemeral.normalized" \
+  || fail "ephemeral workspace mount source is missing"
+grep -Fq -- "dst=/workspace" "$TMP_ROOT/dry-run-ephemeral.normalized" \
+  || fail "ephemeral workspace is not mounted at /workspace"
+grep -Fq -- "src=$TEST_PROJECT" "$TMP_ROOT/dry-run-ephemeral.normalized" \
+  && fail "ephemeral workspace still mounts the host checkout"
+grep -Fq -- "dry-run" "$TMP_ROOT/dry-run-ephemeral.err" \
+  && fail "ephemeral dry-run unexpectedly copied the workspace"
+pass "ephemeral workspace uses a launcher-owned copy"
 
 # Sensitive path trees are refused, including descendants and ancestors.
 mkdir -p \

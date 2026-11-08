@@ -79,7 +79,8 @@ doors that matter and leave everything else closed:
 
 1. allow your model provider in the egress policy (see
    [Egress and signing](#egress-and-signing));
-2. mount the project with `--workspace-mode rw`.
+2. mount the project with `--workspace-mode ephemeral` (or `rw` for a
+   deliberate shared checkout).
 
 By default the host workspace is **not** mounted. Pi runs in an empty,
 disposable `/workspace`:
@@ -89,13 +90,24 @@ cd ~/code/some-project
 pi-sandbox
 ```
 
-To let Pi read the checkout:
+To let Pi read the checkout without changing it:
 
 ```bash
 pi-sandbox --workspace-mode ro
 ```
 
-To let Pi edit it:
+To let Pi edit a disposable copy without touching the host checkout:
+
+```bash
+pi-sandbox --workspace-mode ephemeral
+```
+
+The launcher copies the working tree, including uncommitted and untracked
+files, under `$PI_SANDBOX_STATE/workspaces/`. It mounts the copy read-write and
+parks it on exit so you can review the changes. The host checkout is never
+modified. Pass `--workspace-discard` to remove the copy on exit.
+
+To edit the host checkout directly, use the shared mode deliberately:
 
 ```bash
 pi-sandbox --workspace-mode rw
@@ -104,19 +116,20 @@ pi-sandbox --workspace-mode rw
 Or select the project path explicitly:
 
 ```bash
-pi-sandbox --workspace ~/code/some-project --workspace-mode rw
+pi-sandbox --workspace ~/code/some-project --workspace-mode ephemeral
 ```
 
 To opt in persistently, add this to `~/.config/pi-sandbox/config`:
 
 ```bash
-PI_SANDBOX_WORKSPACE_MODE=rw
+PI_SANDBOX_WORKSPACE_MODE=ephemeral
 ```
 
 A read-write mount is a trust decision: the agent can plant files that a
-host-side git, Pi, test, build, deploy or IDE process may execute later. Use
-`none` or `ro` when that is outside your threat model, or keep a separate clone
-for sandbox sessions. See
+host-side git, Pi, test, build, deploy or IDE process may execute later.
+`ephemeral` prevents those writes from reaching the host checkout, but the
+parked copy is still untrusted output. Use `none` or `ro` when even reading the
+checkout is outside your threat model. See
 [workspace exposure](security.md#workspace-exposure-modes).
 
 Launching from `$HOME` or `/` never mounts that directory. Instead, the launcher

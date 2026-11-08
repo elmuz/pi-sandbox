@@ -16,27 +16,44 @@ to Pi.
 The host workspace is not mounted by default. Select a mode explicitly:
 
 ```bash
-pi-sandbox --workspace-mode none   # default: empty /workspace
-pi-sandbox --workspace-mode ro     # project mounted read-only
-pi-sandbox --workspace-mode rw     # project mounted read-write
+pi-sandbox --workspace-mode none        # default: empty /workspace
+pi-sandbox --workspace-mode ro          # project mounted read-only
+pi-sandbox --workspace-mode ephemeral   # project copied and mounted read-write
+pi-sandbox --workspace-mode rw          # project mounted read-write
 ```
 
 Set the default persistently in `~/.config/pi-sandbox/config`:
 
 ```bash
-PI_SANDBOX_WORKSPACE_MODE=rw
+PI_SANDBOX_WORKSPACE_MODE=ephemeral
 ```
 
 | Mode | Host workspace | Use when |
 | --- | --- | --- |
 | `none` | Not mounted; writable tmpfs | Agent must not touch the checkout |
 | `ro` | Mounted read-only | Agent may read code, not modify it |
+| `ephemeral` | Copied; copy mounted read-write | Edit without host writes |
 | `rw` | Mounted read-write | Accept host-side execution risk |
 
 `ro` protects the host workspace from modification. It does not protect
 confidentiality: Pi can read files in the checkout, including secrets, and send
 them to the model provider or through the egress proxy. `none` avoids both
 integrity and confidentiality exposure from the checkout.
+
+`ephemeral` copies the full working tree, including `.git`, uncommitted changes
+and untracked files, into:
+
+```text
+$PI_SANDBOX_STATE/workspaces/<project>-<id>.<random>/
+```
+
+The copy is mounted read-write. The host checkout is never modified. On exit
+the copy is parked and its path is printed; pass `--workspace-discard` or set
+`PI_SANDBOX_WORKSPACE_DISCARD=1` to remove it instead. The parked copy is
+untrusted agent output: review it before copying anything back or executing
+anything inside it. Ephemeral copies are not resumed automatically; each launch
+starts from the current host checkout. Keep the parked path if you need to
+recover changes later, but the launcher will not reopen it as a workspace.
 
 Earlier versions mounted the workspace read-write by default. To keep that
 behaviour after upgrading, set `PI_SANDBOX_WORKSPACE_MODE=rw` in the launcher
@@ -64,10 +81,11 @@ directory with a mounted workspace for work that must persist.
 Pi builds its footer from the process working directory. The launcher used to
 start Pi in `/workspace`, so every session showed `workspace` in the footer.
 
-When the project is mounted with `ro` or `rw` and lives under the host home
-directory, the launcher also mounts it at the same absolute path inside the
-container and starts Pi there. The footer then shows the actual project, for
-example `~/code/foo`, which makes concurrent sessions distinguishable.
+When the project is mounted with `ro`, `rw` or `ephemeral` and lives under the
+host home directory, the launcher also mounts the selected source at the same
+absolute path inside the container and starts Pi there. The footer then shows
+the actual project, for example `~/code/foo`, which makes concurrent sessions
+distinguishable.
 
 With `none`, Pi starts in the empty `/workspace`, so the built-in footer shows
 `workspace`; the container-only marker still shows the project name.

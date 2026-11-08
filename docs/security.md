@@ -25,8 +25,8 @@ Mounts:
 
 | Container path | Source | Mode |
 | --- | --- | --- |
-| `/workspace` | project or empty tmpfs | `ro` read-only, `rw` read-write |
-| project host path | same project directory | `ro` or `rw` only |
+| `/workspace` | project, copy or empty tmpfs | `ro`, `rw` or `ephemeral` |
+| project host path | project or its copy | `ro` or `rw` only |
 | `/tmp/wayland-0` | host Wayland socket | read-only, opt-in |
 | `/state/pi-agent` | named volume `pi-state-<hash>` | read-write |
 | `/home/alessio` | named volume `pi-home-<hash>` | read-write |
@@ -59,7 +59,7 @@ Everything that widens the sandbox is off unless explicitly enabled:
 
 | Capability | Default | Enable |
 | --- | --- | --- |
-| Host workspace | Not mounted | `PI_SANDBOX_WORKSPACE_MODE=ro` or `rw` |
+| Host workspace | Not mounted | `PI_SANDBOX_WORKSPACE_MODE` (not `none`) |
 | Public egress | Denied | Add `allow` rules to the egress policy |
 | Wayland clipboard | Disabled | `PI_SANDBOX_CLIPBOARD=1` or `--clipboard` |
 | GitHub CLI token | Disabled | `PI_SANDBOX_GH_TOKEN=1` or `--gh-token` |
@@ -128,9 +128,9 @@ implemented.
 
 The launcher scans up to six levels of a mounted workspace for common secret
 names such as `.env`, `.vaults`, `*.vault_pass`, `id_*`, `*.pem`, `*.key` and
-`.netrc`. It prints a warning because `ro` and `rw` expose those files to Pi.
-The scan is advisory; set `PI_SANDBOX_SECRET_SCAN=0` to disable it. It does not
-run when the workspace is not mounted (`none`).
+`.netrc`. It prints a warning because `ro`, `rw` and `ephemeral` expose those
+files to Pi. The scan is advisory; set `PI_SANDBOX_SECRET_SCAN=0` to disable
+it. It does not run when the workspace is not mounted (`none`).
 
 ## Workspace exposure modes
 
@@ -141,6 +141,7 @@ checkout. It defaults to `none`.
 | --- | --- | --- |
 | `none` | Not mounted; empty tmpfs | Integrity and confidentiality |
 | `ro` | Mounted read-only | Integrity; data can still leak |
+| `ephemeral` | Copied; copy mounted read-write | Host checkout and later runs |
 | `rw` | Mounted read-write | Nothing after the session |
 
 The `ro` mount is useful for review and analysis. It does not prevent the agent
@@ -148,8 +149,28 @@ from reading repository secrets and sending them to the model provider or
 through the egress proxy. The model provider already receives prompt content by
 design, so treat any mounted checkout as disclosed to that provider.
 
-The `rw` mount is the coding mode, and it is a deliberate trust decision. An
-untrusted agent can plant files that a host-side process executes later:
+The `ephemeral` mode copies the working tree, including `.git`, uncommitted
+changes and untracked files, into a launcher-owned directory under
+`$PI_SANDBOX_STATE/workspaces/` and mounts the copy read-write. The host
+checkout is not a mount source, so an agent cannot plant `.git/hooks`,
+`.pi/mcp.json`, `AGENTS.md`, build metadata or executable files in the host
+checkout through the sandbox. The copy is still readable by the agent and by
+the model provider, so confidentiality is the same as `ro`.
+
+On exit the copy is parked under the state directory and the path is printed.
+`--workspace-discard` or `PI_SANDBOX_WORKSPACE_DISCARD=1` removes it instead.
+A parked copy is untrusted agent output. Do not run host `pi`, tests, builds,
+deploys, `pre-commit` or git hooks inside it without reviewing it first. Copy
+individual changes back intentionally; the launcher never applies them to the
+host checkout.
+
+Ephemeral copies are not resumed automatically. Each launch starts from the
+current host checkout. Keep the parked path to recover changes later; the
+launcher will not reopen it as a workspace.
+
+The `rw` mount is the shared-checkout coding mode and is a deliberate trust
+decision. An untrusted agent can plant files that a host-side process executes
+later:
 
 - `.git/hooks`, plus `.git/config` settings such as `core.hooksPath`,
   `core.fsmonitor`, `filter.*`, `diff.*`, `credential.helper`, `gpg.program`,
@@ -176,11 +197,12 @@ The container protects the host from direct access *during the session*. It does
 not protect a host-side process that later reads or executes the same checkout.
 The launcher cannot make a read-write mount safe against that later execution.
 
-If a read-write mount is outside your threat model:
+If a shared read-write mount is outside your threat model:
 
-- use `none` for maximum isolation, or `ro` when Pi needs to read the code;
+- use `none` for maximum isolation, `ro` when Pi only needs to read the code,
+  or `ephemeral` when Pi needs to edit;
 - keep a separate clone for sandbox sessions and another checkout for host-side
-  development, tests and releases;
+  development, tests and releases if you keep using `rw`;
 - before running host `pi`, git hooks, tests, builds, deploys, IDEs or
   `pre-commit` against a sandbox-written checkout, review tracked, untracked and
   ignored files, `.git/config`, `.git/hooks` and executable bits.

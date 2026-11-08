@@ -136,6 +136,9 @@ if ((with_tests)); then
   step "MCP contract self-test"
   scripts/mcp-selftest.sh
 
+  step "Workspace isolation self-test"
+  scripts/workspace-test.sh
+
   step "Isolation self-test"
   scripts/isolation-test.sh
 fi

@@ -11,7 +11,8 @@
 #   cd /path/to/project
 #   pi-sandbox [pi arguments...]
 #   pi-sandbox --workspace /path/to/project [pi arguments...]
-#   pi-sandbox --workspace-mode none|ro|rw [pi arguments...]
+#   pi-sandbox --workspace-mode none|ro|rw|ephemeral [pi arguments...]
+#   pi-sandbox --workspace-discard
 #   pi-sandbox --dry-run
 #   pi-sandbox --mcp
 #   pi-sandbox --mcp-token-file PATH
@@ -32,9 +33,13 @@
 # the model provider and any package or git endpoints.
 #
 # The host workspace is not mounted by default. PI_SANDBOX_WORKSPACE_MODE
-# accepts none (default), ro or rw; --workspace-mode overrides it for one
-# launch. With none, /workspace is an empty writable tmpfs. With ro/rw the
-# project is mounted at /workspace and, under $HOME, mirrored at its host path.
+# accepts none (default), ro, rw or ephemeral; --workspace-mode overrides it
+# for one launch. With none, /workspace is an empty writable tmpfs. With ro/rw
+# the project is mounted at /workspace and, under $HOME, mirrored at its host
+# path. With ephemeral the project is copied into the launcher state directory
+# and the copy is mounted read-write, so the host checkout is never modified.
+# The copy is parked by default and its path is printed on exit; pass
+# --workspace-discard to remove it instead.
 #
 # Starting in $HOME or / uses a temporary empty workspace instead of mounting
 # that directory. Scratch workspaces are always disposable and mounted
@@ -95,6 +100,7 @@ NOFILE="${PI_SANDBOX_NOFILE:-8192}"
 SECRET_SCAN="${PI_SANDBOX_SECRET_SCAN:-1}"
 CLIPBOARD="${PI_SANDBOX_CLIPBOARD:-0}"
 GH_TOKEN_ENABLED="${PI_SANDBOX_GH_TOKEN:-0}"
+WORKSPACE_DISCARD="${PI_SANDBOX_WORKSPACE_DISCARD:-0}"
 
 # Identity of this launcher process. Container names already embed $$; the
 # start time disambiguates a recycled PID when sweeping stale containers.
@@ -368,7 +374,9 @@ launcher_pid="$1"
 launcher_start="$2"
 container_name="$3"
 scratch_dir="$4"
-mcp_stage_dir="$5"
+ephemeral_dir="$5"
+workspace_discard="$6"
+mcp_stage_dir="$7"
 
 while kill -0 "$launcher_pid" 2>/dev/null; do
   current="$(awk '{print $22}' "/proc/$launcher_pid/stat" 2>/dev/null || true)"
@@ -398,6 +406,9 @@ for _ in 1 2 3; do
 done
 
 [[ -n "$scratch_dir" ]] && rm -rf -- "$scratch_dir"
+if [[ -n "$ephemeral_dir" && "$workspace_discard" == "1" ]]; then
+  rm -rf -- "$ephemeral_dir"
+fi
 [[ -n "$mcp_stage_dir" ]] && rm -rf -- "$mcp_stage_dir"
 WATCHDOG
 )"
@@ -405,8 +416,9 @@ WATCHDOG
   (
     unset GH_TOKEN MCP_TOKEN
     exec setsid bash -c "$script" pi-sandbox-watchdog \
-      "$launcher_pid" "$launcher_start" "$container_name" "$scratch_workspace_dir" "$mcp_stage_dir" \
-      </dev/null >/dev/null 2>&1
+      "$launcher_pid" "$launcher_start" "$container_name" \
+      "$scratch_workspace_dir" "$ephemeral_workspace_dir" "$WORKSPACE_DISCARD" \
+      "$mcp_stage_dir" </dev/null >/dev/null 2>&1
   ) &
 }
 
@@ -453,14 +465,18 @@ warn_enabled_capabilities() {
   local default_allow=0
 
   if [[ -z "$scratch_workspace_dir" ]]; then
-    case "$effective_workspace_mode" in
-      ro)
-        rows+=("workspace  $workspace (read-only; readable data can leave the sandbox)")
-        ;;
-      rw)
-        rows+=("workspace  $workspace (read-write; host-side tools may execute agent-written files)")
-        ;;
-    esac
+    if [[ -n "$ephemeral_workspace_dir" ]]; then
+      rows+=("workspace  $workspace (ephemeral copy at $ephemeral_workspace_dir; host checkout is not modified)")
+    else
+      case "$effective_workspace_mode" in
+        ro)
+          rows+=("workspace  $workspace (read-only; readable data can leave the sandbox)")
+          ;;
+        rw)
+          rows+=("workspace  $workspace (read-write; host-side tools may execute agent-written files)")
+          ;;
+      esac
+    fi
   fi
 
   if [[ -f "$EGRESS_POLICY" ]]; then
@@ -522,6 +538,9 @@ warn_workspace_secrets() {
     printf '  %s\n' "${found[@]}" >&2
     if [[ "$effective_workspace_mode" == "ro" ]]; then
       echo "The workspace is mounted read-only, but Pi can still read and send these files." >&2
+    elif [[ -n "$ephemeral_workspace_dir" ]]; then
+      echo "The workspace was copied into the sandbox. Pi can read and write these files in the copy." >&2
+      echo "The host checkout is not modified, but the parked copy remains untrusted output." >&2
     else
       echo "The workspace is mounted read-write. Move or remove these files if they should not be visible to Pi." >&2
     fi
@@ -546,7 +565,9 @@ Usage:
 
 Sandbox options:
   --workspace PATH          Project path (default: current directory)
-  --workspace-mode MODE     none (default), ro, or rw
+  --workspace-mode MODE     none (default), ro, rw, or ephemeral
+  --workspace-discard       Remove the ephemeral copy instead of parking it
+  --workspace-keep          Park the ephemeral copy (default)
   --mcp                     Enable MCP for this launch
   --no-mcp                  Disable MCP for this launch
   --mcp-token-file PATH     Import an MCP token, then launch
@@ -569,7 +590,8 @@ Any argument not listed above is passed to the Pi instance inside the
 sandbox. Use -- to force the rest of the command line to Pi.
 
 Environment:
-  PI_SANDBOX_WORKSPACE_MODE   none, ro, or rw
+  PI_SANDBOX_WORKSPACE_MODE   none, ro, rw, or ephemeral
+  PI_SANDBOX_WORKSPACE_DISCARD  1 to remove an ephemeral copy on exit
   PI_SANDBOX_STATE            Runtime state directory
   PI_SANDBOX_CONFIG_DIR       Launcher config directory
   PI_SANDBOX_MCP              1 to enable MCP
@@ -591,6 +613,9 @@ help_requested=0
 no_mcp=0
 mcp_token_import=""
 scratch_workspace_dir=""
+ephemeral_workspace_dir=""
+ephemeral_workspace_created=0
+workspace_mount_source=""
 start_egress=0
 stop_egress=0
 restart_egress=0
@@ -607,8 +632,16 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --workspace-mode)
-      workspace_mode="${2:?--workspace-mode needs none, ro or rw}"
+      workspace_mode="${2:?--workspace-mode needs none, ro, rw or ephemeral}"
       shift 2
+      ;;
+    --workspace-discard)
+      WORKSPACE_DISCARD=1
+      shift
+      ;;
+    --workspace-keep)
+      WORKSPACE_DISCARD=0
+      shift
       ;;
     --update)
       update_image=1
@@ -712,9 +745,16 @@ if ! [[ "$NOFILE" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 case "$workspace_mode" in
-  none|ro|rw) ;;
+  none|ro|rw|ephemeral) ;;
   *)
-    echo "PI_SANDBOX_WORKSPACE_MODE must be none, ro or rw: $workspace_mode" >&2
+    echo "PI_SANDBOX_WORKSPACE_MODE must be none, ro, rw or ephemeral: $workspace_mode" >&2
+    exit 2
+    ;;
+esac
+case "$WORKSPACE_DISCARD" in
+  0|1) ;;
+  *)
+    echo "PI_SANDBOX_WORKSPACE_DISCARD must be 0 or 1: $WORKSPACE_DISCARD" >&2
     exit 2
     ;;
 esac
@@ -838,6 +878,15 @@ cleanup() {
     rm -rf -- "$scratch_workspace_dir"
   fi
 
+  if [[ "$ephemeral_workspace_created" -eq 1 ]]; then
+    if [[ "$WORKSPACE_DISCARD" == "1" || "$container_started" -eq 0 ]]; then
+      rm -rf -- "$ephemeral_workspace_dir"
+    else
+      echo "Ephemeral workspace parked: $ephemeral_workspace_dir" >&2
+      echo "Treat it as untrusted agent output; it was not applied to the host checkout." >&2
+    fi
+  fi
+
   if [[ -n "$mcp_stage_dir" ]]; then
     rm -rf -- "$mcp_stage_dir"
   fi
@@ -883,6 +932,33 @@ else
   session_dir="$STATE_DIR/sessions/${project_name}-${project_id}"
 fi
 
+# Ephemeral mode copies the checkout into launcher-owned state and mounts the
+# copy. The copy is created lazily so --dry-run stays cheap and side-effect free.
+workspace_mount_source="$workspace"
+if [[ "$effective_workspace_mode" == "ephemeral" ]]; then
+  workspaces_root="$STATE_DIR/workspaces"
+  if [[ "$dry_run" -eq 1 ]]; then
+    ephemeral_workspace_dir="$workspaces_root/${project_name}-${project_id}-dry-run"
+  else
+    install -d -m 700 "$workspaces_root"
+    chmod 700 "$workspaces_root"
+    ephemeral_workspace_dir="$(mktemp -d "$workspaces_root/${project_name}-${project_id}.XXXXXX")"
+    ephemeral_workspace_created=1
+    if ! cp -a --reflink=auto -- "$workspace/." "$ephemeral_workspace_dir/"; then
+      echo "Could not copy the workspace to $ephemeral_workspace_dir" >&2
+      echo "The host checkout was not modified." >&2
+      exit 2
+    fi
+    # cp -a preserves the source directory mode on the destination. The parked
+    # copy is launcher state, not a checkout, so keep it private regardless.
+    chmod 700 "$ephemeral_workspace_dir"
+    echo "Using ephemeral workspace $ephemeral_workspace_dir" >&2
+    echo "Source checkout remains untouched: $workspace" >&2
+  fi
+  workspace_mount_source="$ephemeral_workspace_dir"
+  effective_workspace_mode="rw"
+fi
+
 # Pi's footer shows the process working directory. When the project is
 # mounted, mirror it at its host path and start Pi there, so the footer
 # identifies the actual project (for example ~/code/foo) instead of the
@@ -904,7 +980,7 @@ esac
 
 if [[ "$effective_workspace_mode" != "none" ]]; then
   workspace_mounts+=(
-    --mount "type=bind,src=$workspace,dst=/workspace${workspace_mount_opts}"
+    --mount "type=bind,src=$workspace_mount_source,dst=/workspace${workspace_mount_opts}"
   )
 
   # Only mirror paths under the host home directory. Mounting an arbitrary
@@ -912,7 +988,7 @@ if [[ "$effective_workspace_mode" != "none" ]]; then
   if [[ "$workspace" == "$HOME"/* && "$workspace" != "/workspace" ]]; then
     container_workspace="$workspace"
     mirror_mounts+=(
-      --mount "type=bind,src=$workspace,dst=$workspace${workspace_mount_opts}"
+      --mount "type=bind,src=$workspace_mount_source,dst=$workspace${workspace_mount_opts}"
     )
   fi
 fi

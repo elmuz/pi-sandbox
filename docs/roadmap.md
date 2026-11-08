@@ -5,8 +5,9 @@ findings, decisions and dependencies; it is not a feature guide. The behavioral
 documentation stays in the other pages linked from [the index](index.md).
 
 - **Status:** the default-deny model (no workspace, no egress, no extra
-  capabilities) and the MCP client contract are implemented. The open work below
-  hardens the edges that the 2026-11-05 review found.
+  capabilities), the MCP client contract and the disposable workspace are
+  implemented. All items accepted from the 2026-11-05 review are complete; no
+  open in-repo work remains.
 - **Review input:** [2026-11-05 review](reviews/2026-11-05-review.md). That file
   is a frozen snapshot; accepted items are copied here and tracked only here.
 - **Sibling project:** [server-mcp](https://github.com/elmuz/server-mcp) owns the
@@ -20,14 +21,12 @@ documentation stays in the other pages linked from [the index](index.md).
 
 ## Work items
 
-Completed items stay here as history; the table lists only open work.
+Completed items stay here as history. There are no open in-repo items; the
+remaining cross-repo deployment work is tracked in server-mcp.
 
-| ID | Pri | Item | Pairs with |
+| ID | Pri | Item | Status |
 | --- | --- | --- | --- |
-| PS-6 | P1 | Disposable workspace | server-mcp 3.8/3b |
-
-Recommended order: PS-1, PS-2, PS-3, PS-4, PS-5 and PS-7 are done; next is
-PS-6.
+| PS-6 | P1 | Disposable workspace | Done 2026-11-07 |
 
 ### PS-1 P0 — confine the MCP config overlay mount source
 
@@ -112,23 +111,32 @@ PS-6.
 
 ### PS-6 P1 — disposable workspace for untrusted sessions
 
-- [ ] **Problem.** `rw` mounts the host checkout directly. An untrusted author
+- [x] **Done (2026-11-07).** `--workspace-mode ephemeral` copies the full
+      working tree, including `.git`, uncommitted changes and untracked files,
+      into `$PI_SANDBOX_STATE/workspaces/<project>-<id>.<random>`, mounts the
+      copy read-write, and never uses the host checkout as a mount source. The
+      copy is parked on exit and its path is printed; `--workspace-discard` or
+      `PI_SANDBOX_WORKSPACE_DISCARD=1` removes it instead. `ro` remains the
+      read-only host checkout, and `rw` remains the explicit shared-checkout
+      mode with its warning. `scripts/workspace-test.sh` uses fake Podman to
+      prove host isolation, parking, discarding and the unchanged `rw` behavior;
+      `scripts/isolation-test.sh` covers the dry-run mount source. The mode does
+      not resume a parked copy automatically; each launch starts from the
+      current host checkout, and the parked path is the handoff for later work.
+- [x] **Problem.** `rw` mounts the host checkout directly. An untrusted author
   can plant `.pi/mcp.json`, `.pi/extensions`, `AGENTS.md`, git hooks, test/build
   metadata and scripts that a later host-side `pi`, test, build or deploy
   process executes. Ignored paths do not appear in `git diff`. The container
   protects the host during the session, not the checkout afterwards. This is the
   pi-sandbox side of server-mcp 3.8 Phase 3b.
-- [ ] **Change.** Offer a disposable clone or ephemeral copy for sandbox
-  sessions (for example, `git worktree`/`git clone` into state, or a
-  copy-on-write overlay), and/or a read-only host checkout. Keep an explicit
-  "shared checkout" mode for trusted use, with a prominent warning. Document the
-  interim rule until the mode lands: never run host `pi`, tests, build,
-  `pre-commit` or deploy in a checkout an untrusted sandbox wrote to without a
-  separate review.
-- [ ] **Acceptance.** In the disposable mode, files written inside the sandbox
-  do not appear in the host checkout; exiting removes or clearly parks the copy.
-  The shared mode is still available and documented as the lower-isolation
-  choice. `docs/security.md` matches the implemented behavior.
+- [x] **Change.** Offer a disposable clone or ephemeral copy for sandbox
+  sessions, while keeping an explicit shared-checkout mode for trusted use with
+  a prominent warning. Document the residual rule: a parked copy is untrusted
+  agent output and must be reviewed before host execution.
+- [x] **Acceptance.** In `ephemeral` mode, files written inside the sandbox do
+  not appear in the host checkout; exiting clearly parks the copy unless
+  discarding is requested. `rw` is still available and documented as the
+  lower-isolation choice. `docs/security.md` matches the implemented behavior.
 
 ### PS-5 P1 — decide the concurrent-session trust boundary
 
@@ -221,6 +229,9 @@ Keep these here so closed debates are not reopened as new findings.
   exact paths, descendants and ancestors, while keeping the scratch behavior.
 - [x] PS-5: the shared `pi-egress` and `pi-control` bridges are not a boundary
   between sessions; the limitation and operational guidance are documented.
+- [x] PS-6: `ephemeral` mounts a launcher-owned copy, parks or discards it on
+  exit, and leaves the host checkout untouched; `rw` remains the explicit
+  shared mode.
 - [x] PS-4: Pi expands `${MCP_TOKEN}` in MCP headers; the example, docs and
   fake-endpoint check agree with the server-mcp bearer contract.
 - [x] PS-7: the isolation and MCP self-tests run in `scripts/lint.sh

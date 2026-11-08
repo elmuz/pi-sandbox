@@ -42,6 +42,7 @@ mkdir -p \
   "$STATE_DIR/auth" \
   "$STATE_DIR/secrets" \
   "$STATE_DIR/sessions" \
+  "$STATE_DIR/workspaces" \
   "$STATE_DIR/gpg/home" \
   "$STATE_DIR/mcp/target/ssh" \
   "$STATE_DIR/mcp/target/audit"
@@ -51,6 +52,7 @@ chmod 700 \
   "$STATE_DIR/auth" \
   "$STATE_DIR/secrets" \
   "$STATE_DIR/sessions" \
+  "$STATE_DIR/workspaces" \
   "$STATE_DIR/gpg" \
   "$STATE_DIR/gpg/home" \
   "$STATE_DIR/mcp/target" \

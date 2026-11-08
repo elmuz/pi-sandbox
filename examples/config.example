@@ -5,11 +5,18 @@
 #
 # Host workspace exposure. The default is none: Pi runs in an empty
 # disposable /workspace and cannot read or modify the host checkout.
-#   none  no host workspace (most secure)
-#   ro    read-only mount; protects integrity, not confidentiality
-#   rw    read-write mount; required for coding, but files written by the agent
-#         can be executed later by host git, test, build, deploy or IDE tools
-# PI_SANDBOX_WORKSPACE_MODE=rw
+#   none       no host workspace (most secure)
+#   ro         read-only mount; protects integrity, not confidentiality
+#   ephemeral  copy the checkout into $PI_SANDBOX_STATE/workspaces and mount
+#              the copy read-write; the host checkout is never modified
+#   rw         read-write host mount; shared-checkout mode, so files written by
+#              the agent can be executed later by host git, test, build, deploy
+#              or IDE tools
+# PI_SANDBOX_WORKSPACE_MODE=ephemeral
+#
+# Park an ephemeral copy on exit (default) or remove it. A parked copy is
+# untrusted agent output; review it before executing anything inside it.
+# PI_SANDBOX_WORKSPACE_DISCARD=0
 #
 # Silence the startup capability summary and the workspace secret warning.
 # PI_SANDBOX_WARN=0

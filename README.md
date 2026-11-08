@@ -21,10 +21,10 @@ A rootless Podman sandbox for the
 [Pi coding agent](https://github.com/earendil-works/pi-coding-agent).
 
 Pi runs in a disposable rootless Podman container. By default it has no access
-to the host checkout: workspace mounts (`ro` or `rw`), public egress, clipboard,
-tokens and signing are explicit opt-ins. Sessions and provider auth are
-intentionally bridged into the container, while the host home, SSH keys,
-Podman socket and namespaces stay outside.
+to the host checkout: workspace mounts (`ro`, `rw` or a disposable ephemeral
+copy), public egress, clipboard, tokens and signing are explicit opt-ins.
+Sessions and provider auth are intentionally bridged into the container, while
+the host home, SSH keys, Podman socket and namespaces stay outside.
 
 Runtime state lives under `${XDG_DATA_HOME:-$HOME/.local/share}/pi-sandbox`
 unless `PI_SANDBOX_STATE` overrides it.
@@ -39,7 +39,8 @@ shows the current project.</em></p>
 ## Features
 
 - Workspace exposure is opt-in: `none` by default, `ro` for read-only analysis,
-  `rw` for editing. A disposable scratch mode covers `$HOME` and `/`.
+  `ephemeral` for coding in a disposable copy, and `rw` for a deliberate shared
+  checkout. A disposable scratch mode covers `$HOME` and `/`.
 - Rootless Podman with `userns=keep-id`, a read-only root filesystem,
   `cap-drop=ALL`, `no-new-privileges`, CPU/memory/PID/file-descriptor limits.
 - No direct internet or LAN route. A shared egress proxy denies every
@@ -96,10 +97,22 @@ provider you use. Add package/git endpoints later only if the agent needs them.
 
 ### 3. Choose how to expose your project
 
-For a normal coding session, mount the checkout read-write:
+For a normal coding session, let Pi work in a disposable copy of the
+checkout:
 
 ```bash
 cd ~/code/some-project
+pi-sandbox --workspace-mode ephemeral
+```
+
+The launcher copies the checkout, including uncommitted and untracked files,
+under `$PI_SANDBOX_STATE/workspaces/`, mounts the copy read-write, and never
+modifies the host checkout. On exit the copy is parked and its path is printed
+so you can review the changes. Pass `--workspace-discard` to remove it instead.
+
+To work directly in the host checkout, use the shared mode deliberately:
+
+```bash
 pi-sandbox --workspace-mode rw
 ```
 
@@ -116,9 +129,11 @@ pi-sandbox
 ```
 
 Be aware of the trade-off: `rw` lets the agent write files that a host-side
-git, test, build, deploy or IDE process may execute later. `ro` still exposes
+git, test, build, deploy or IDE process may execute later. `ephemeral` removes
+that post-session execution path because the host checkout is never written,
+but the parked copy is still untrusted agent output. `ro` still exposes
 repository contents to the model provider and egress. `none` is the most
-isolated. Set `PI_SANDBOX_WORKSPACE_MODE=rw` in
+isolated. Set `PI_SANDBOX_WORKSPACE_MODE=ephemeral` in
 `~/.config/pi-sandbox/config` to make your choice persistent.
 
 ### 4. Reuse the host Pi login

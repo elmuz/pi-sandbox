@@ -26,6 +26,7 @@ pi-sandbox/
 ├── scripts/lint.sh                shared lint entrypoint for CI and local use
 ├── scripts/mcp-auth-test.sh       Pi header-expansion contract check
 ├── scripts/mcp-selftest.sh        contract checks without an MCP stack
+├── scripts/workspace-test.sh      disposable workspace fake-Podman checks
 ├── install.sh                     creates state dirs and symlinks the launcher
 ├── LICENSE                        MIT license
 └── README.md
@@ -41,6 +42,8 @@ The lint job only calls `scripts/lint.sh --with-tests`, which performs:
 
 - ShellCheck on the launcher, installer, scripts and entrypoint;
 - the MCP contract self-test, which does not need an MCP stack;
+- the disposable workspace self-test, which uses fake Podman and writes only
+  to a temporary copy;
 - the static isolation self-test, which also runs the Python policy tests;
 - Hadolint on both Dockerfiles;
 - yamllint on the Compose file, examples and workflow;
@@ -91,6 +94,16 @@ It checks token validation, fail-closed behaviour for opted-in projects, the
 absence of a token in the podman argv, idempotent creation of the internal
 control network, and the Pi header-expansion contract. The header check starts
 a fake MCP endpoint and is skipped when `pi` or `python3` is unavailable.
+
+The disposable workspace self-test needs no container runtime:
+
+```bash
+scripts/workspace-test.sh
+```
+
+It proves that an ephemeral launch writes to a launcher-owned copy, that the
+host checkout is untouched, that the copy is parked or discarded as requested,
+and that `rw` still mounts the host checkout.
 
 The isolation self-test has two modes:
 
