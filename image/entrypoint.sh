@@ -7,7 +7,7 @@ mkdir -p "$state"
 # Copy only the reviewed, non-secret global configuration. The source is
 # mounted read-only by ~/.local/bin/pi-sandbox.
 if [ -d /global-pi ]; then
-  for file in settings.json models.json AGENTS.md; do
+  for file in settings.json models.json keybindings.json AGENTS.md; do
     if [ -f "/global-pi/$file" ]; then
       cp -f "/global-pi/$file" "$state/$file"
     fi

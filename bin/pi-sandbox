@@ -1179,7 +1179,7 @@ fi
 
 # Global, non-secret Pi configuration. Never mount auth.json, trust.json,
 # sessions, mcp-auth.json or the whole ~/.pi/agent directory.
-for file in settings.json models.json AGENTS.md; do
+for file in settings.json models.json keybindings.json AGENTS.md; do
   if [[ -f "$HOME/.pi/agent/$file" ]]; then
     mounts+=(--mount "type=bind,src=$HOME/.pi/agent/$file,dst=/global-pi/$file,ro")
   fi

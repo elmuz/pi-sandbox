@@ -168,6 +168,7 @@ Shared read-only from `~/.pi/agent`:
 ```text
 settings.json
 models.json
+keybindings.json
 AGENTS.md
 prompts/
 skills/
@@ -184,7 +185,6 @@ sessions/
 mcp-auth.json
 models-store.json
 bin/
-keybindings.json
 SYSTEM.md
 APPEND_SYSTEM.md
 ```

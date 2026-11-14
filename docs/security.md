@@ -35,6 +35,7 @@ Mounts:
 | `/shared-auth` | per-container tmpfs seeded from `/auth-seed` | read-write |
 | `/global-pi/settings.json` | host Pi config | read-only |
 | `/global-pi/models.json` | host Pi config | read-only |
+| `/global-pi/keybindings.json` | host Pi config | read-only |
 | `/global-pi/AGENTS.md` | host Pi config | read-only |
 | `/global-pi/prompts/` | host Pi config | read-only |
 | `/global-pi/skills/` | host Pi config | read-only |
