@@ -13,3 +13,6 @@
 # Python test/build caches.
 __pycache__/
 *.pyc
+
+# Editor state.
+.idea/
