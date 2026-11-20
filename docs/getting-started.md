@@ -4,7 +4,7 @@
 
 - Rootless Podman.
 - A host Pi installation for version matching. The launcher falls back to
-  `1.4.0` when `pi --version` is unavailable.
+  `1.6.0` when `pi --version` is unavailable.
 - Linux. Wayland is optional and clipboard access is opt-in.
 
 ## Install
@@ -66,7 +66,7 @@ target-specific MCP configuration stay in the runtime state directory.
 The image is tagged with the host Pi version:
 
 ```text
-localhost/pi-sandbox:1.4.0
+localhost/pi-sandbox:1.6.0
 ```
 
 The launcher reads `pi --version` and builds that tag if it is missing.
@@ -153,7 +153,7 @@ directory, including `$HOME`.
 Build a specific version:
 
 ```bash
-PI_VERSION=1.4.0 pi-sandbox --update
+PI_VERSION=1.6.0 pi-sandbox --update
 ```
 
 ## Egress and signing
