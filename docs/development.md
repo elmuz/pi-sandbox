@@ -139,3 +139,48 @@ docker run --rm \
   localhost/pi-sandbox-egress:ci \
   --check-policy --policy /etc/pi-egress/policy.conf
 ```
+
+## Upgrading the pinned Pi version
+
+Image tags follow the host `pi --version`, but the launcher fallback and the
+documentation carry an explicit pin. After upgrading Pi on the host:
+
+1. Note the new version: `pi --version`.
+2. Update the fallback in `bin/pi-sandbox`
+   (`${host_pi_version:-X.Y.Z}`).
+3. Update `ARG PI_VERSION=X.Y.Z` in `image/pi.Dockerfile`.
+4. Update the version references in `docs/getting-started.md`: the fallback
+   sentence, the example image tag and the `PI_VERSION=` update example.
+5. Rebuild both images: `pi-sandbox --update`.
+6. Verify: `podman run --rm localhost/pi-sandbox:X.Y.Z pi --version`.
+
+Old image tags are left in local storage; remove them with
+`podman image prune` or `podman rmi` when convenient. A running sandbox keeps
+the image it started with, so restart it to pick up the new version. Sessions,
+auth and configuration under `~/.local/share/pi-sandbox` survive the rebuild.
+
+## Rebuilding on hosts without overlayfs
+
+`podman build` mounts the build context through overlayfs. On a kernel with no
+overlayfs module, the build fails before the first step with:
+
+```text
+mount overlay: ... userxattr: no such device
+```
+
+Point the rootless overlay driver at `fuse-overlayfs` in
+`~/.config/containers/storage.conf`:
+
+```toml
+[storage]
+driver = "overlay"
+
+[storage.options.overlay]
+mount_program = "/usr/bin/fuse-overlayfs"
+```
+
+The `[storage.options.overlay]` section matters; a `mount_program` under
+`[storage.options]` does not fix the build-context mount. Container storage
+already falls back to `fuse-overlayfs` on such hosts, so only the build path
+needs the explicit setting. After the change, `pi-sandbox --update` builds both
+images normally.
